@@ -1,23 +1,25 @@
 """
 Data exploration script for cyber insurance events data.
 """
+
 import sys
 from pathlib import Path
 
-import pandas as pd
-import numpy as np
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
+import pandas as pd
 import seaborn as sns
-
-# Add project root to Python path if needed
-project_root = Path(__file__).parents[3]
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
 
 from cyber_insurance.data.ingestion import CyberEventDataLoader
 from cyber_insurance.utils.logger import setup_logger
+
+# Configure matplotlib backend
+matplotlib.use("Agg")  # Use non-interactive backend
+
+# Add project root to Python path
+project_root = Path(__file__).resolve().parents[3]
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
 # Set up logger
 log_dir = project_root / 'logs'
@@ -29,7 +31,7 @@ logger = setup_logger(
 def analyze_event_frequency(data: pd.DataFrame) -> None:
     """Analyze the distribution of event frequency."""
     freq = data['event_frequency']
-    
+
     # Basic statistics
     stats = {
         'Mean': freq.mean(),
@@ -41,17 +43,17 @@ def analyze_event_frequency(data: pd.DataFrame) -> None:
         'Zeros': (freq == 0).sum(),
         'Zero %': (freq == 0).mean() * 100
     }
-    
+
     logger.info("\nEvent Frequency Distribution:")
     for metric, value in stats.items():
         logger.info(f"{metric}: {value:.2f}")
-    
+
     # Value counts
     logger.info("\nFrequency Counts:")
     value_counts = freq.value_counts().sort_index()
     for value, count in value_counts.items():
         logger.info(f"{value} events: {count} organizations ({count/len(freq)*100:.1f}%)")
-    
+
     # Dispersion test
     variance = freq.var()
     mean = freq.mean()
@@ -65,23 +67,23 @@ def main():
     """Main function to run data exploration."""
     # Initialize data loader
     data_loader = CyberEventDataLoader()
-    
+
     # Load and process data
     logger.info("Loading data...")
     data_loader.load_data()
-    
+
     # Get raw data
     raw_data = data_loader.data
-    
+
     logger.info("\n=== Raw Data Summary ===")
     logger.info(f"Number of records: {len(raw_data)}")
     logger.info("\nColumns:")
     for col in raw_data.columns:
         logger.info(f"- {col}")
-    
+
     logger.info("\n=== Processing Frequency Data ===")
     frequency_data = data_loader.preprocess_data()
-    
+
     # Analyze event frequency distribution
     analyze_event_frequency(frequency_data)
 
@@ -91,7 +93,7 @@ def main():
     plt.title('Distribution of Cyber Events per Company')
     plt.xlabel('Number of Events')
     plt.ylabel('Count')
-    
+
     # Save the plot
     plots_dir = project_root / 'outputs' / 'plots'
     plots_dir.mkdir(parents=True, exist_ok=True)
