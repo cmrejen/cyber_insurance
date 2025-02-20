@@ -9,7 +9,7 @@ This module performs detailed exploratory data analysis including:
 5. Relationship between features
 """
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -42,6 +42,43 @@ def load_ico_data(file_path: Path) -> pd.DataFrame:
     }
 
     return pd.read_csv(file_path, dtype=dtypes)
+
+def fix_duplicate_bi_references(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
+    """Fix duplicate BI References by creating unique identifiers.
+    
+    A duplicate is defined as having the same BI Reference in the same time period
+    (Year and Quarter). For such duplicates, we keep the original reference for the
+    first occurrence and append 'A1', 'A2', etc. to subsequent ones.
+    
+    Args:
+        df: Input DataFrame
+        
+    Returns:
+        Tuple containing:
+        - DataFrame with unique BI References
+        - Dictionary with duplicate statistics
+    """
+    # Group by the composite key to find duplicates
+
+    df["temp_key"] = df['BI Reference'] + '_' + df['Year'].astype(str) + '_' + df['Quarter']
+
+    for bi_id, group in df.groupby('BI Reference'):
+        if len(group) > 1:  # If we have duplicates in the same time period
+            year = group['Year'].iloc[0]
+            quarter = group['Quarter'].iloc[0]
+            orig_ref = '_'.join([bi_id, str(year), quarter])
+
+            # Keep first occurrence as is
+            # Append 'A1', 'A2', etc. to subsequent ones
+            for i, (curr_ref, sub_group) in enumerate(group.groupby('temp_key')):
+                if curr_ref != orig_ref:
+                    new_id = f"{bi_id}A{i}"
+                    df.loc[sub_group.index, 'BI Reference'] = new_id
+
+    # Remove temporary key
+    df = df.drop('temp_key', axis=1)
+
+    return df
 
 def analyze_multiple_records(df: pd.DataFrame) -> Dict:
     """Analyze incidents with multiple records.
@@ -133,9 +170,14 @@ def main():
     logger.info("Loading data...")
     df = load_ico_data(data_path)
 
-    # 1. Basic dataset information
+    # Fix duplicate BI References
+    logger.info("\nChecking for duplicate BI References across time periods...")
+    df = fix_duplicate_bi_references(df)
+
+    # Basic dataset information
     logger.info("\nDataset Overview:")
-    logger.info(f"Shape: {df.shape}")
+    logger.info(f"Total records: {len(df)}")
+    logger.info(f"Unique BI References after adjustment: {df['BI Reference'].nunique()}")
     logger.info("\nData Types:")
     print(df.dtypes)
 
