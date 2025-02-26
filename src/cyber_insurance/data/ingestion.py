@@ -1,35 +1,14 @@
 """Module for ingesting and transforming ICO breach data."""
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import Dict, Optional
 
 import pandas as pd
 
 from cyber_insurance.utils.logger import setup_logger
+from cyber_insurance.data.constants import ColumnNames, DataTypes
 
 logger = setup_logger("ico_data_ingestion")
-
-
-class ColumnNames(str, Enum):
-    """Column names in the ICO dataset."""
-    BI_REFERENCE = 'BI Reference'
-    YEAR = 'Year'
-    QUARTER = 'Quarter'
-    DATA_SUBJECT_TYPE = 'Data Subject Type'
-    DATA_TYPE = 'Data Type'
-    DECISION_TAKEN = 'Decision Taken'
-    INCIDENT_TYPE = 'Incident Type'
-    NO_DATA_SUBJECTS_AFFECTED = 'No. Data Subjects Affected'
-    SECTOR = 'Sector'
-    TIME_TAKEN_TO_REPORT = 'Time Taken to Report'
-
-
-class DataTypes(str, Enum):
-    """Valid data types for columns."""
-    STRING = 'str'
-    INTEGER = 'int'
-    CATEGORY = 'category'
 
 
 @dataclass

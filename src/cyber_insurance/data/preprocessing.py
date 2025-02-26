@@ -3,7 +3,9 @@ from typing import Optional
 
 import pandas as pd
 
-from cyber_insurance.data.ingestion import ColumnNames
+from cyber_insurance.data.constants import (
+    ColumnNames, CategoricalColumns
+)
 from cyber_insurance.utils.logger import setup_logger
 
 logger = setup_logger("ico_data_preprocessing")
@@ -23,14 +25,22 @@ class ICODataPreprocessor:
         1. Fix duplicate BI References
         2. Convert multiple entries to single row with counts
         3. Validate data types
+        4. Transform year to years_since_start
+        5. Encode categorical and ordinal variables
 
         Args:
             df: Input DataFrame
 
         Returns:
             Preprocessed DataFrame
+
+        Raises:
+            ValueError: If required columns are missing or invalid values found
         """
         self._df = df.copy()
+        
+        # Validate required columns
+        self._validate_columns()
 
         # Step 1: Fix duplicate BI References
         self._fix_duplicate_bi_references()
@@ -40,8 +50,43 @@ class ICODataPreprocessor:
 
         # Step 3: Validate types
         self._validate_column_types()
-
+        
+        # Step 4: Transform year
+        self._transform_year()
+        
+        # Step 5: Encode variables
+        self._encode_variables()
+        # TODO: Add imputation for missing fields
         return self._df
+
+    def _validate_columns(self) -> None:
+        """Validate that all required columns are present with correct values."""
+        if self._df is None:
+            raise ValueError("No data loaded.")
+
+        # Check required columns
+        required_cols = [col.value for col in ColumnNames]
+        missing_cols = [col for col in required_cols if col not in self._df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}")
+
+        # Validate categories for each column
+        for col, valid_cats in CategoricalColumns.VALID_CATEGORIES.items():
+            invalid_values = [val for val in self._df[col].unique() if val not in valid_cats]
+            if invalid_values:
+                raise ValueError(
+                    f"Invalid values in {col}: {invalid_values}\n"
+                    f"Valid values are: {valid_cats}"
+                )
+
+        # Validate ordinal columns
+        for col, mapping in CategoricalColumns.ORDINAL_ENCODE_COLUMNS.items():
+            invalid_values = [val for val in self._df[col].unique() if val not in mapping]
+            if invalid_values:
+                raise ValueError(
+                    f"Invalid values in {col}: {invalid_values}\n"
+                    f"Valid values are: {list(mapping.keys())}"
+                )
 
     def _fix_duplicate_bi_references(self) -> None:
         """Fix duplicate BI References by creating unique identifiers.
@@ -235,6 +280,59 @@ class ICODataPreprocessor:
         for col in self._df.columns:
             logger.info(f"{col}: {self._df[col].dtype}")
 
+    def _transform_year(self) -> None:
+        """Transform year to years_since_start.
+        
+        Creates a new feature 'years_since_start' representing the number
+        of years since the earliest year in the dataset. This helps reduce
+        the scale of the year variable while maintaining temporal ordering.
+        """
+        if self._df is None:
+            raise ValueError("No data loaded.")
+            
+        min_year = self._df[ColumnNames.YEAR.value].min()
+        self._df['years_since_start'] = self._df[ColumnNames.YEAR.value] - min_year
+        
+        # Drop original year column as it's now transformed
+        self._df = self._df.drop(columns=[ColumnNames.YEAR.value])
+        
+        logger.info(
+            f"Transformed year to years_since_start (reference year: {min_year})"
+        )
+
+    def _encode_variables(self) -> None:
+        """Encode categorical and ordinal variables.
+        
+        1. Dummy encode categorical variables using pandas get_dummies with drop_first
+        2. Ordinal encode severity and time variables using predefined mappings
+        """
+        if self._df is None:
+            raise ValueError("No data loaded.")
+
+        # Dummy encode categorical variables
+        dummy_df = pd.get_dummies(
+            self._df[CategoricalColumns.DUMMY_ENCODE_COLUMNS],
+            drop_first=True,
+            prefix_sep='_'
+        )
+        
+        # Drop original columns and add dummy columns
+        self._df = self._df.drop(columns=CategoricalColumns.DUMMY_ENCODE_COLUMNS)
+        self._df = pd.concat([self._df, dummy_df], axis=1)
+        
+        logger.info(
+            "Dummy encoded columns (with drop_first=True):\n" +
+            "\n".join(f"- {col}" for col in CategoricalColumns.DUMMY_ENCODE_COLUMNS)
+        )
+
+        # Ordinal encode severity and time variables
+        for col, mapping in CategoricalColumns.ORDINAL_ENCODE_COLUMNS.items():
+            self._df[col] = self._df[col].map(mapping)
+            logger.info(
+                f"Ordinal encoded {col} with {len(mapping)} levels: "
+                f"{list(mapping.items())}"
+            )
+
     @property
     def data(self) -> pd.DataFrame:
         """Get the current DataFrame.
@@ -246,5 +344,5 @@ class ICODataPreprocessor:
             ValueError: If data has not been loaded yet
         """
         if self._df is None:
-            raise ValueError("No data loaded. Call load_data() first.")
+            raise ValueError("No data loaded. Call preprocess() first.")
         return self._df.copy()

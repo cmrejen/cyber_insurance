@@ -109,14 +109,11 @@ def main():
     logger.info("Loading data...")
     ingestion = ICODataIngestion()
 
-    # Load and process data
     df = ingestion.load_data(data_path)
 
-    # Fix duplicate BI References
-    logger.info("\nPreprocessing data...")
-    # Preprocess data
-    preprocessor = ICODataPreprocessor()
-    df = preprocessor.preprocess(df)
+    # preprocessor = ICODataPreprocessor()
+
+    # df = preprocessor.preprocess(df)
 
     # Basic dataset information
     logger.info("\nDataset Overview:")
