@@ -9,83 +9,23 @@ This module performs detailed exploratory data analysis including:
 5. Relationship between features
 """
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict
 
-import numpy as np
 import pandas as pd
 from tabulate import tabulate
 
+from cyber_insurance.data.ingestion import ICODataIngestion
+from cyber_insurance.data.preprocessing import ICODataPreprocessor
 from cyber_insurance.utils.logger import setup_logger
 
 logger = setup_logger("ico_data_analysis")
 
-def load_ico_data(file_path: Path) -> pd.DataFrame:
-    """Load ICO breach data with appropriate data types.
-    
-    Args:
-        file_path: Path to the ICO breach CSV file
-        
-    Returns:
-        Raw DataFrame with appropriate data types
-    """
-    dtypes = {
-        'BI Reference': str,
-        'Year': int,
-        'Quarter': str,
-        'Data Subject Type': 'category',
-        'Data Type': 'category',
-        'Decision Taken': 'category',
-        'Incident Type': 'category',
-        'No. Data Subjects Affected': 'category',
-        'Sector': 'category',
-        'Time Taken to Report': 'category'
-    }
-
-    return pd.read_csv(file_path, dtype=dtypes)
-
-def fix_duplicate_bi_references(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict]:
-    """Fix duplicate BI References by creating unique identifiers.
-    
-    A duplicate is defined as having the same BI Reference in the same time period
-    (Year and Quarter). For such duplicates, we keep the original reference for the
-    first occurrence and append 'A1', 'A2', etc. to subsequent ones.
-    
-    Args:
-        df: Input DataFrame
-        
-    Returns:
-        Tuple containing:
-        - DataFrame with unique BI References
-        - Dictionary with duplicate statistics
-    """
-    # Group by the composite key to find duplicates
-
-    df["temp_key"] = df['BI Reference'] + '_' + df['Year'].astype(str) + '_' + df['Quarter']
-
-    for bi_id, group in df.groupby('BI Reference'):
-        if len(group) > 1:  # If we have duplicates in the same time period
-            year = group['Year'].iloc[0]
-            quarter = group['Quarter'].iloc[0]
-            orig_ref = '_'.join([bi_id, str(year), quarter])
-
-            # Keep first occurrence as is
-            # Append 'A1', 'A2', etc. to subsequent ones
-            for i, (curr_ref, sub_group) in enumerate(group.groupby('temp_key')):
-                if curr_ref != orig_ref:
-                    new_id = f"{bi_id}A{i}"
-                    df.loc[sub_group.index, 'BI Reference'] = new_id
-
-    # Remove temporary key
-    df = df.drop('temp_key', axis=1)
-
-    return df
-
 def analyze_multiple_records(df: pd.DataFrame) -> Dict:
     """Analyze incidents with multiple records.
-    
+
     Args:
         df: Input DataFrame
-        
+
     Returns:
         Dictionary containing analysis results
     """
@@ -104,7 +44,7 @@ def analyze_multiple_records(df: pd.DataFrame) -> Dict:
 
     # Check which columns vary within same incident
     varying_columns = {}
-    for incident in multi_record_incidents:  # Analyze first 5 as example
+    for incident in multi_record_incidents:
         incident_data = multi_records[multi_records['BI Reference'] == incident]
         for col in df.columns:
             if len(incident_data[col].unique()) > 1:
@@ -115,10 +55,10 @@ def analyze_multiple_records(df: pd.DataFrame) -> Dict:
 
 def analyze_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     """Analyze missing values in each column.
-    
+
     Args:
         df: Input DataFrame
-        
+
     Returns:
         DataFrame with missing value statistics
     """
@@ -130,10 +70,10 @@ def analyze_missing_values(df: pd.DataFrame) -> pd.DataFrame:
 
 def analyze_column_distributions(df: pd.DataFrame) -> Dict:
     """Analyze the distribution of values in each column.
-    
+
     Args:
         df: Input DataFrame
-        
+
     Returns:
         Dictionary containing distribution statistics for each column
     """
@@ -150,7 +90,6 @@ def analyze_column_distributions(df: pd.DataFrame) -> Dict:
                 'top_5_values': value_counts.head().to_dict(),
                 'distribution_stats': {
                     'mode': df[col].mode()[0],
-                    'entropy': -(value_counts / len(df) * np.log(value_counts / len(df))).sum()
                 }
             }
         else:
@@ -168,11 +107,16 @@ def main():
     data_path = project_root / "data" / "data-security-cyber-incidents-trends-q1-2019-to-q3-2024.csv"
 
     logger.info("Loading data...")
-    df = load_ico_data(data_path)
+    ingestion = ICODataIngestion()
+
+    # Load and process data
+    df = ingestion.load_data(data_path)
 
     # Fix duplicate BI References
-    logger.info("\nChecking for duplicate BI References across time periods...")
-    df = fix_duplicate_bi_references(df)
+    logger.info("\nPreprocessing data...")
+    # Preprocess data
+    preprocessor = ICODataPreprocessor()
+    df = preprocessor.preprocess(df)
 
     # Basic dataset information
     logger.info("\nDataset Overview:")
@@ -188,9 +132,9 @@ def main():
     for key, value in multi_record_analysis.items():
         if key != 'varying_columns':
             logger.info(f"{key}: {value}")
-    logger.info("\nColumns that vary within same incident:")
+    logger.info("\nColumns that vary within same incident (i.e. have more than 1 entry):")
     for col, count in multi_record_analysis['varying_columns'].items():
-        logger.info(f"{col}: varies in {count} incidents")
+        logger.info(f"{col}: varies for {count} incidents")
 
     # 3. Missing values analysis
     logger.info("\nAnalyzing missing values...")

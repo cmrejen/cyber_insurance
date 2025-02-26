@@ -79,3 +79,4 @@ cyber_insurance/outputs/
 cyber_insurance/logs/
 !data/Cyber Events Database - Records thru mid-Aug2024.xlsx
 !data/data-security-cyber-incidents-trends-q1-2019-to-q3-2024.csv
+!src/cyber_insurance/data/
