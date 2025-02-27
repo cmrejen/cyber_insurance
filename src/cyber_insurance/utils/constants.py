@@ -1,6 +1,7 @@
 """Constants and enums for data processing."""
 from enum import Enum
 from typing import Dict, List
+from pathlib import Path
 
 
 class ColumnNames(str, Enum):
@@ -94,3 +95,62 @@ class CategoricalColumns:
             'Marketing', 'Political', 'Unassigned', 'Unknown'
         ]
     }
+
+
+class InputPaths:
+    """Input data paths."""
+    
+    # Base paths
+    DATA_DIR = Path("data")
+    
+    # Data files
+    ICO_BREACH_DATA = DATA_DIR / "data-security-cyber-incidents-trends-q1-2019-to-q3-2024.csv"
+    
+    # Ensure all directories exist
+    ALL_DIRS = [DATA_DIR]
+    
+    @classmethod
+    def create_directories(cls) -> None:
+        """Create all input directories if they don't exist."""
+        for directory in cls.ALL_DIRS:
+            directory.mkdir(parents=True, exist_ok=True)
+            
+    @classmethod
+    def validate_files(cls) -> None:
+        """Validate that required input files exist."""
+        required_files = [cls.ICO_BREACH_DATA]
+        for file_path in required_files:
+            if not file_path.exists():
+                raise FileNotFoundError(
+                    f"Required input file not found: {file_path}"
+                )
+
+
+class OutputPaths:
+    """Output paths for analysis results."""
+    
+    # Base paths
+    BASE_DIR = Path("outputs")
+    MISSING_ANALYSIS_DIR = BASE_DIR / "missing_analysis"
+    
+    # Missing analysis subdirectories
+    MISSING_GENERAL = MISSING_ANALYSIS_DIR / "general"
+    MISSING_TEMPORAL = MISSING_ANALYSIS_DIR / "temporal"
+    MISSING_CATEGORICAL = MISSING_ANALYSIS_DIR / "categorical"
+    MISSING_CONTINUOUS = MISSING_ANALYSIS_DIR / "continuous"
+    
+    # Ensure all directories exist
+    ALL_DIRS = [
+        BASE_DIR,
+        MISSING_ANALYSIS_DIR,
+        MISSING_GENERAL,
+        MISSING_TEMPORAL,
+        MISSING_CATEGORICAL,
+        MISSING_CONTINUOUS
+    ]
+    
+    @classmethod
+    def create_directories(cls) -> None:
+        """Create all output directories if they don't exist."""
+        for directory in cls.ALL_DIRS:
+            directory.mkdir(parents=True, exist_ok=True)

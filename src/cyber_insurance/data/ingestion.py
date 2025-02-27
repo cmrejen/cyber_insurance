@@ -6,7 +6,7 @@ from typing import Dict, Optional
 import pandas as pd
 
 from cyber_insurance.utils.logger import setup_logger
-from cyber_insurance.data.constants import ColumnNames, DataTypes
+from cyber_insurance.utils.constants import ColumnNames, DataTypes
 
 logger = setup_logger("ico_data_ingestion")
 

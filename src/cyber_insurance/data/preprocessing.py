@@ -1,10 +1,10 @@
 """Module for preprocessing ICO breach data."""
-from typing import Optional
+from typing import Optional, List
 
 import pandas as pd
 
-from cyber_insurance.data.constants import (
-    ColumnNames, CategoricalColumns
+from cyber_insurance.utils.constants import (
+    ColumnNames, CategoricalColumns, DataTypes
 )
 from cyber_insurance.utils.logger import setup_logger
 
@@ -18,18 +18,24 @@ class ICODataPreprocessor:
         """Initialize the preprocessor."""
         self._df: Optional[pd.DataFrame] = None
 
-    def preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
+    def preprocess(
+        self,
+        df: pd.DataFrame,
+        encode_variables: bool = True
+    ) -> pd.DataFrame:
         """Preprocess the ICO breach data.
 
         Steps:
         1. Fix duplicate BI References
         2. Convert multiple entries to single row with counts
         3. Validate data types
-        4. Transform year to years_since_start
-        5. Encode categorical and ordinal variables
+        4. Remove low percentage unknown/unassigned values
+        5. Transform year to years_since_start
+        6. Encode categorical and ordinal variables (optional)
 
         Args:
             df: Input DataFrame
+            encode_variables: Whether to encode categorical and ordinal variables
 
         Returns:
             Preprocessed DataFrame
@@ -38,8 +44,7 @@ class ICODataPreprocessor:
             ValueError: If required columns are missing or invalid values found
         """
         self._df = df.copy()
-        
-        # Validate required columns
+
         self._validate_columns()
 
         # Step 1: Fix duplicate BI References
@@ -48,15 +53,69 @@ class ICODataPreprocessor:
         # Step 2: Consolidate multiple entries
         self._consolidate_multiple_entries()
 
-        # Step 3: Validate types
+        # Step 3: Validate data types and categories
         self._validate_column_types()
         
-        # Step 4: Transform year
+        # Step 4: Remove low percentage unknown/unassigned values
+        self._remove_low_percentage_unknown()
+
+        # Step 5: Transform year
         self._transform_year()
         
-        # Step 5: Encode variables
-        self._encode_variables()
-        # TODO: Add imputation for missing fields
+        # Step 6: Encode variables if requested
+        if encode_variables:
+            self.encode_variables()
+
+        return self._df
+
+    def encode_variables(
+        self,
+        df: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """Encode categorical and ordinal variables using predefined mappings.
+        
+        This method handles both categorical (dummy encoding) and ordinal variables
+        based on the definitions in CategoricalColumns. The encoding is consistent
+        whether done during preprocessing or separately.
+        
+        Args:
+            df: Optional DataFrame to encode. If None, uses internal DataFrame
+                
+        Returns:
+            DataFrame with encoded variables
+            
+        Raises:
+            ValueError: If no DataFrame is available to encode
+        """
+        if df is not None:
+            self._df = df.copy()
+        elif self._df is None:
+            raise ValueError("No DataFrame available to encode")
+        
+        # 1. Dummy encode categorical variables
+        dummy_df = pd.get_dummies(
+            self._df[CategoricalColumns.DUMMY_ENCODE_COLUMNS],
+            drop_first=True,  # Avoid perfect multicollinearity
+            prefix_sep='_'
+        )
+        
+        # Drop original columns and add dummy columns
+        self._df = self._df.drop(columns=CategoricalColumns.DUMMY_ENCODE_COLUMNS)
+        self._df = pd.concat([self._df, dummy_df], axis=1)
+        
+        logger.info(
+            "Dummy encoded columns (with drop_first=True):\n" +
+            "\n".join(f"- {col}" for col in CategoricalColumns.DUMMY_ENCODE_COLUMNS)
+        )
+
+        # 2. Ordinal encode severity and time variables
+        for col, mapping in CategoricalColumns.ORDINAL_ENCODE_COLUMNS.items():
+            self._df[col] = self._df[col].map(mapping)
+            logger.info(
+                f"Ordinal encoded {col} with {len(mapping)} levels: "
+                f"{list(mapping.items())}"
+            )
+        
         return self._df
 
     def _validate_columns(self) -> None:
@@ -262,7 +321,7 @@ class ICODataPreprocessor:
         grouped[subject_type_count] = grouped[subject_type_count].astype(int)
 
         logger.info(f"Consolidated {len(self._df) - len(grouped)} duplicate entries")
-        self._df = grouped
+        self._df = grouped.set_index(ColumnNames.BI_REFERENCE.value)
 
     def _validate_column_types(self) -> None:
         """Validate that columns have expected types after preprocessing."""
@@ -279,6 +338,40 @@ class ICODataPreprocessor:
         logger.info("\nColumn types after preprocessing:")
         for col in self._df.columns:
             logger.info(f"{col}: {self._df[col].dtype}")
+
+    def _remove_low_percentage_unknown(self, threshold: float = 0.05) -> None:
+        """Remove records with low percentage unknown/unassigned values.
+        
+        For each column, if the percentage of 'Unknown' or 'Unassigned' values
+        is less than the threshold, remove those records.
+        
+        Args:
+            threshold: Minimum percentage (0-1) to keep unknown values
+        """
+        if self._df is None:
+            raise ValueError("No data loaded.")
+            
+        unknown_values = ['Unknown', 'Unassigned']
+        
+        for col in self._df.columns:
+            # Skip non-categorical columns
+            if not isinstance(self._df[col].dtype, pd.CategoricalDtype):
+                continue
+                
+            # Calculate percentage of unknown values
+            unknown_mask = self._df[col].isin(unknown_values)
+            unknown_pct = unknown_mask.mean()
+            
+            # Remove if percentage is below threshold
+            if 0 < unknown_pct < threshold:
+                initial_count = len(self._df)
+                self._df = self._df[~unknown_mask]
+                removed_count = initial_count - len(self._df)
+                
+                logger.info(
+                    f"Removed {removed_count} records ({unknown_pct:.2%}) with "
+                    f"Unknown/Unassigned values in {col}"
+                )
 
     def _transform_year(self) -> None:
         """Transform year to years_since_start.
@@ -299,39 +392,6 @@ class ICODataPreprocessor:
         logger.info(
             f"Transformed year to years_since_start (reference year: {min_year})"
         )
-
-    def _encode_variables(self) -> None:
-        """Encode categorical and ordinal variables.
-        
-        1. Dummy encode categorical variables using pandas get_dummies with drop_first
-        2. Ordinal encode severity and time variables using predefined mappings
-        """
-        if self._df is None:
-            raise ValueError("No data loaded.")
-
-        # Dummy encode categorical variables
-        dummy_df = pd.get_dummies(
-            self._df[CategoricalColumns.DUMMY_ENCODE_COLUMNS],
-            drop_first=True,
-            prefix_sep='_'
-        )
-        
-        # Drop original columns and add dummy columns
-        self._df = self._df.drop(columns=CategoricalColumns.DUMMY_ENCODE_COLUMNS)
-        self._df = pd.concat([self._df, dummy_df], axis=1)
-        
-        logger.info(
-            "Dummy encoded columns (with drop_first=True):\n" +
-            "\n".join(f"- {col}" for col in CategoricalColumns.DUMMY_ENCODE_COLUMNS)
-        )
-
-        # Ordinal encode severity and time variables
-        for col, mapping in CategoricalColumns.ORDINAL_ENCODE_COLUMNS.items():
-            self._df[col] = self._df[col].map(mapping)
-            logger.info(
-                f"Ordinal encoded {col} with {len(mapping)} levels: "
-                f"{list(mapping.items())}"
-            )
 
     @property
     def data(self) -> pd.DataFrame:

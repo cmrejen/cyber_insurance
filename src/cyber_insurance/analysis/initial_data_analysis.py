@@ -16,6 +16,9 @@ from tabulate import tabulate
 
 from cyber_insurance.data.ingestion import ICODataIngestion
 from cyber_insurance.data.preprocessing import ICODataPreprocessor
+from cyber_insurance.utils.constants import (
+    ColumnNames, OutputPaths, InputPaths
+)
 from cyber_insurance.utils.logger import setup_logger
 
 logger = setup_logger("ico_data_analysis")
@@ -101,15 +104,15 @@ def analyze_column_distributions(df: pd.DataFrame) -> Dict:
 
     return distributions
 
-def main():
+def main() -> None:
     """Run comprehensive data analysis."""
-    project_root = Path(__file__).resolve().parents[3]
-    data_path = project_root / "data" / "data-security-cyber-incidents-trends-q1-2019-to-q3-2024.csv"
-
-    logger.info("Loading data...")
+    # Validate input files exist
+    InputPaths.validate_files()
+    
     ingestion = ICODataIngestion()
-
-    df = ingestion.load_data(data_path)
+    
+    logger.info("Loading data...")
+    df = ingestion.load_data(InputPaths.ICO_BREACH_DATA)
 
     # preprocessor = ICODataPreprocessor()
 
