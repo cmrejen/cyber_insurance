@@ -138,6 +138,7 @@ class OutputPaths:
     MISSING_TEMPORAL = MISSING_ANALYSIS_DIR / "temporal"
     MISSING_CATEGORICAL = MISSING_ANALYSIS_DIR / "categorical"
     MISSING_CONTINUOUS = MISSING_ANALYSIS_DIR / "continuous"
+    IMPUTATION = MISSING_ANALYSIS_DIR / "imputation"
     
     # Ensure all directories exist
     ALL_DIRS = [
@@ -146,7 +147,8 @@ class OutputPaths:
         MISSING_GENERAL,
         MISSING_TEMPORAL,
         MISSING_CATEGORICAL,
-        MISSING_CONTINUOUS
+        MISSING_CONTINUOUS,
+        IMPUTATION
     ]
     
     @classmethod

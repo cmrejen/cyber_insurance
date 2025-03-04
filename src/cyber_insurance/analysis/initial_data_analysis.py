@@ -16,9 +16,7 @@ from tabulate import tabulate
 
 from cyber_insurance.data.ingestion import ICODataIngestion
 from cyber_insurance.data.preprocessing import ICODataPreprocessor
-from cyber_insurance.utils.constants import (
-    ColumnNames, OutputPaths, InputPaths
-)
+from cyber_insurance.utils.constants import InputPaths
 from cyber_insurance.utils.logger import setup_logger
 
 logger = setup_logger("ico_data_analysis")
@@ -114,9 +112,9 @@ def main() -> None:
     logger.info("Loading data...")
     df = ingestion.load_data(InputPaths.ICO_BREACH_DATA)
 
-    # preprocessor = ICODataPreprocessor()
+    preprocessor = ICODataPreprocessor()
 
-    # df = preprocessor.preprocess(df)
+    df = preprocessor.preprocess(df, impute_missing=True, encode_variables=False)
 
     # Basic dataset information
     logger.info("\nDataset Overview:")
