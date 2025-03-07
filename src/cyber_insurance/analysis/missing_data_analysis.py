@@ -383,7 +383,7 @@ def main() -> None:
     df = ingestion.load_data(InputPaths.ICO_BREACH_DATA)
 
     preprocessor = ICODataPreprocessor()
-    df = preprocessor.preprocess(df, encode_variables=False, impute_missing=True)
+    df = preprocessor.preprocess(df, encode_variables=False, impute_missing=False)
 
     # Initialize analyzer
     analyzer = MissingDataAnalyzer()

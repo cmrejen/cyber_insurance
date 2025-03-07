@@ -114,7 +114,7 @@ def main() -> None:
 
     preprocessor = ICODataPreprocessor()
 
-    df = preprocessor.preprocess(df, impute_missing=True, encode_variables=False)
+    df = preprocessor.preprocess(df, impute_missing=False, encode_variables=False)
 
     # Basic dataset information
     logger.info("\nDataset Overview:")

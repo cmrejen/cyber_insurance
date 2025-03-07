@@ -132,6 +132,7 @@ class OutputPaths:
     # Base paths
     BASE_DIR = Path("outputs")
     MISSING_ANALYSIS_DIR = BASE_DIR / "missing_analysis"
+    MODEL_EVALUATION_DIR = BASE_DIR / "model_evaluation"
     
     # Missing analysis subdirectories
     MISSING_GENERAL = MISSING_ANALYSIS_DIR / "general"
@@ -139,7 +140,7 @@ class OutputPaths:
     MISSING_CATEGORICAL = MISSING_ANALYSIS_DIR / "categorical"
     MISSING_CONTINUOUS = MISSING_ANALYSIS_DIR / "continuous"
     IMPUTATION = MISSING_ANALYSIS_DIR / "imputation"
-    
+        
     # Ensure all directories exist
     ALL_DIRS = [
         BASE_DIR,
@@ -148,7 +149,8 @@ class OutputPaths:
         MISSING_TEMPORAL,
         MISSING_CATEGORICAL,
         MISSING_CONTINUOUS,
-        IMPUTATION
+        IMPUTATION,
+        MODEL_EVALUATION_DIR
     ]
     
     @classmethod

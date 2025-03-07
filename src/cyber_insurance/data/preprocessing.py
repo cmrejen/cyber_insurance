@@ -29,7 +29,7 @@ class ICODataPreprocessor:
         self,
         df: pd.DataFrame,
         encode_variables: bool = True,
-        impute_missing: bool = False,
+        impute_missing: bool = True,
     ) -> pd.DataFrame:
         """Preprocess the ICO breach data.
 
@@ -65,7 +65,7 @@ class ICODataPreprocessor:
 
         # Step 3: Validate data types and categories
         self._validate_column_types()
-
+        # TODO: Investigate the effectiveness of removing low percentage unknown/unassigned values
         # Step 4: Remove low percentage unknown/unassigned values
         self._remove_low_percentage_unknown()
 
