@@ -97,6 +97,21 @@ class CategoricalColumns:
     }
 
 
+class ModelParams:
+    """Hyperparameters for machine learning models."""
+    
+    # Random Forest tuning ranges with proper type hints
+    RF_N_ESTIMATORS: List[int] = [100, 200]  # Reduced range for faster tuning
+    RF_MIN_SAMPLES_LEAF: List[int] = [3, 5]  # Conservative values
+    RF_MAX_FEATURES: List[int] = [5]  # Fixed value based on feature importance
+    
+    # Neural Network parameters
+    NN_HIDDEN_DIMS: List[int] = [32, 64, 128]
+    NN_LEARNING_RATE: List[float] = [0.001, 0.01]
+    NN_BATCH_SIZE: List[int] = [32, 64]
+    NN_EPOCHS: int = 100
+
+
 class InputPaths:
     """Input data paths."""
     
@@ -129,10 +144,11 @@ class InputPaths:
 class OutputPaths:
     """Output paths for analysis results."""
     
-    # Base paths
+    # Base directories
     BASE_DIR = Path("outputs")
     MISSING_ANALYSIS_DIR = BASE_DIR / "missing_analysis"
-    MODEL_EVALUATION_DIR = BASE_DIR / "model_evaluation"
+    MODEL_DIR = BASE_DIR / "models"
+    MODEL_EVALUATION_DIR = MODEL_DIR / "evaluation"
     
     # Missing analysis subdirectories
     MISSING_GENERAL = MISSING_ANALYSIS_DIR / "general"
@@ -140,9 +156,9 @@ class OutputPaths:
     MISSING_CATEGORICAL = MISSING_ANALYSIS_DIR / "categorical"
     MISSING_CONTINUOUS = MISSING_ANALYSIS_DIR / "continuous"
     IMPUTATION = MISSING_ANALYSIS_DIR / "imputation"
-        
-    # Ensure all directories exist
-    ALL_DIRS = [
+    
+    # List of all directories to create
+    ALL_DIRS: List[Path] = [
         BASE_DIR,
         MISSING_ANALYSIS_DIR,
         MISSING_GENERAL,
@@ -150,6 +166,7 @@ class OutputPaths:
         MISSING_CATEGORICAL,
         MISSING_CONTINUOUS,
         IMPUTATION,
+        MODEL_DIR,
         MODEL_EVALUATION_DIR
     ]
     

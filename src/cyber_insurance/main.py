@@ -1,5 +1,4 @@
 """Main entry point for cyber insurance analysis pipeline."""
-import logging
 from pathlib import Path
 from typing import List
 
@@ -17,13 +16,9 @@ from cyber_insurance.models.model_trainer import (
 )
 from cyber_insurance.models.model_evaluator import ModelEvaluator
 from cyber_insurance.utils.constants import ColumnNames, InputPaths
+from cyber_insurance.utils.logger import setup_logger
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+logger = setup_logger("main")
 
 
 def run_pipeline(

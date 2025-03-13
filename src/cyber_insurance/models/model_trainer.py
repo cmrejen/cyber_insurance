@@ -1,92 +1,285 @@
-"""Model training and evaluation framework for cyber insurance data.
+"""Model training and evaluation framework for cyber insurance data."""
 
-This module implements various models suitable for ordinal classification,
-from classical approaches to modern machine learning methods.
-"""
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, List, Optional
-import logging
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn.base import BaseEstimator
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import make_scorer
-from sklearn.model_selection import KFold
-from sklearn.preprocessing import LabelEncoder
-import statsmodels.api as sm
-from statsmodels.miscmodels.ordinal_model import OrderedModel
 import torch
 import torch.nn as nn
+from mord import LogisticIT
+import orf
 from xgboost import XGBClassifier
-logger = logging.getLogger(__name__)
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import (mean_absolute_error, accuracy_score, f1_score)
+
+from cyber_insurance.models.hyperparameter_tuning import RandomForestTuner
+from cyber_insurance.utils.logger import setup_logger
+
+logger = setup_logger("model_trainer")
+
 
 @dataclass
 class ModelResults:
     """Container for model evaluation results."""
-    model_name: str
-    cv_scores: Dict[str, List[float]]
+    predictions: np.ndarray
     feature_importance: Optional[Dict[str, float]] = None
 
 
 class OrdinalModel(ABC):
-    """Abstract base class for ordinal classification models."""
+    """Base class for ordinal models."""
     
-    def __init__(self, target_col: str):
-        """Initialize ordinal model.
+    def __init__(self, target_col: str) -> None:
+        """Initialize model.
         
         Args:
             target_col: Name of target column
         """
         self.target_col = target_col
-        self.model: Optional[BaseEstimator] = None
-        self.label_encoder = LabelEncoder()
+        self.model: Optional[object] = None
+        self.feature_names: List[str] = []
     
     @abstractmethod
     def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
-        """Fit model to training data."""
+        """Fit model to data."""
         pass
     
     @abstractmethod
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Make predictions on new data."""
+        """Generate predictions."""
         pass
     
+    @abstractmethod
     def get_feature_importance(self) -> Optional[Dict[str, float]]:
-        """Get feature importance if available."""
-        return None
+        """Get feature importance scores."""
+        pass
 
 
 class RandomForestOrdinal(OrdinalModel):
-    """Random Forest for ordinal classification."""
+    """Ordinal Random Forest using ORF package."""
     
     def __init__(
         self,
         target_col: str,
-        n_estimators: int = 100,
-        max_depth: Optional[int] = None
-    ):
+        n_estimators: Optional[int] = None,
+        min_samples_leaf: Optional[int] = None,
+        max_features: Optional[int] = None,
+        cv_folds: int = 5,
+        random_state: int = 42,
+        inference: bool = True,
+        honesty: bool = True,
+        honesty_fraction: float = 0.5,
+        sample_fraction: float = 0.5
+    ) -> None:
+        """Initialize model.
+        
+        Args:
+            target_col: Target column name
+            n_estimators: Number of trees (tuned if None)
+            min_samples_leaf: Minimum samples per leaf (tuned if None)
+            max_features: Number of features to consider (tuned if None)
+            cv_folds: Cross-validation folds
+            random_state: Random seed
+            inference: Whether to enable inference mode
+            honesty: Whether to use honest splitting
+            honesty_fraction: Fraction of data for honest estimation
+            sample_fraction: Fraction of data for each tree
+        """
         super().__init__(target_col)
-        self.model = RandomForestClassifier(
-            n_estimators=n_estimators,
-            max_depth=max_depth,
-            random_state=42
-        )
+        self.n_estimators = n_estimators
+        self.min_samples_leaf = min_samples_leaf
+        self.max_features = max_features
+        self.cv_folds = cv_folds
+        self.random_state = random_state
+        self.inference = inference
+        self.honesty = honesty
+        self.honesty_fraction = honesty_fraction
+        self.sample_fraction = sample_fraction
+        self.model: Optional[orf.OrderedForest] = None
     
     def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
-        y_encoded = self.label_encoder.fit_transform(y)
-        self.model.fit(X, y_encoded)
+        """Fit model with hyperparameter tuning if needed."""
+        try:
+            self.feature_names = list(X.columns)
+            
+            # Ensure data is properly formatted
+            X_clean = X.copy()
+            y_clean = y.astype(int)  # Ensure integer labels
+            
+            # Drop any rows with missing values
+            valid_mask = ~(X_clean.isna().any(axis=1) | y_clean.isna())
+            X_clean = X_clean[valid_mask]
+            y_clean = y_clean[valid_mask]
+            
+            # Convert to proper types for ORF
+            X_clean = X_clean.astype(np.float64)
+            
+            # Tune hyperparameters if needed
+            if any(p is None for p in [
+                self.n_estimators,
+                self.min_samples_leaf,
+                self.max_features
+            ]):
+                tuner = RandomForestTuner(
+                    cv_folds=self.cv_folds,
+                    random_state=self.random_state
+                )
+                results = tuner.tune(X_clean, y_clean)
+                self.n_estimators = int(results.best_params['n_estimators'])
+                self.min_samples_leaf = int(results.best_params['min_samples_leaf'])
+                self.max_features = int(results.best_params['max_features'])
+                logger.info(
+                    f"Tuned parameters: n_estimators={self.n_estimators}, "
+                    f"min_samples_leaf={self.min_samples_leaf}, "
+                    f"max_features={self.max_features}"
+                )
+            
+            # Initialize and train model
+            self.model = orf.OrderedForest(
+                n_estimators=self.n_estimators,
+                min_samples_leaf=self.min_samples_leaf,
+                max_features=self.max_features,
+                replace=False,
+                sample_fraction=self.sample_fraction,
+                honesty=self.honesty,
+                honesty_fraction=self.honesty_fraction,
+                inference=self.inference,
+                random_state=self.random_state
+            )
+            
+            # Convert data to numpy arrays with proper types
+            X_values = np.asarray(X_clean.values, dtype=np.float64)
+            y_values = np.asarray(y_clean.values, dtype=np.int32)
+            
+            self.model.fit(X_values, y_values)
+            
+        except Exception as e:
+            logger.error(f"Failed to fit model: {e}")
+            raise ValueError(f"Model fitting failed: {e}") from e
     
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        y_pred = self.model.predict(X)
-        return self.label_encoder.inverse_transform(y_pred)
+        """Generate predictions."""
+        if self.model is None:
+            raise ValueError("Model must be fitted before predicting")
+        
+        try:
+            # Handle missing values for prediction
+            X_clean = X.copy()
+            X_clean = X_clean.fillna(X_clean.mean())  # Simple imputation
+            
+            # Convert to proper types for ORF
+            X_clean = X_clean.astype(np.float64)
+            X_values = np.asarray(X_clean.values, dtype=np.float64)
+            
+            # Get predictions and handle different return types
+            y_pred = self.model.predict(X_values)
+            
+            # Convert predictions to array
+            if isinstance(y_pred, dict):
+                y_pred = np.array([y_pred[i] for i in range(len(X))])
+            elif isinstance(y_pred, list):
+                y_pred = np.array(y_pred)
+                
+            return y_pred.reshape(-1)  # Ensure 1D array
+            
+        except Exception as e:
+            logger.error(f"Prediction failed: {e}")
+            raise ValueError(f"Failed to generate predictions: {e}") from e
     
-    def get_feature_importance(self) -> Dict[str, float]:
-        return dict(zip(
-            self.model.feature_names_in_,
-            self.model.feature_importances_
-        ))
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        """Generate class probabilities."""
+        if self.model is None:
+            raise ValueError("Model must be fitted before predicting")
+        
+        try:
+            # Handle missing values for prediction
+            X_clean = X.copy()
+            X_clean = X_clean.fillna(X_clean.mean())  # Simple imputation
+            
+            # Convert to proper types for ORF
+            X_clean = X_clean.astype(np.float64)
+            X_values = np.asarray(X_clean.values, dtype=np.float64)
+            
+            # Get probabilities and ensure proper shape
+            probs = self.model.predict_proba(X_values)
+            if isinstance(probs, dict):
+                probs = np.array([probs[i] for i in range(len(X))])
+                
+            return probs
+            
+        except Exception as e:
+            logger.error(f"Probability prediction failed: {e}")
+            raise ValueError(f"Failed to generate probabilities: {e}") from e
+    
+    def predict_proba_with_intervals(
+        self,
+        X: pd.DataFrame,
+        alpha: float = 0.05
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Get predicted probabilities with confidence intervals.
+        
+        Args:
+            X: Feature matrix
+            alpha: Significance level (e.g., 0.05 for 95% CI)
+            
+        Returns:
+            Tuple of (predictions, lower_bound, upper_bound)
+        """
+        if self.model is None:
+            raise ValueError("Model must be fitted before predicting")
+            
+        if not self.inference:
+            raise ValueError("Model must be trained with inference=True")
+        
+        try:
+            # Handle missing values for prediction
+            X_clean = X.copy()
+            X_clean = X_clean.fillna(X_clean.mean())  # Simple imputation
+            
+            # Convert to proper types for ORF
+            X_clean = X_clean.astype(np.float64)
+            X_values = np.asarray(X_clean.values, dtype=np.float64)
+            
+            # Get predictions
+            y_pred = self.predict(X)
+            
+            # Get variance estimates
+            variance = self.model.prediction_variance(X_values)
+            if isinstance(variance, dict):
+                variance = np.array([variance[i] for i in range(len(X))])
+            
+            # Calculate confidence intervals
+            margin = 1.96 * np.sqrt(variance)  # 95% CI
+            lower_bound = np.clip(y_pred - margin, 0, None)
+            upper_bound = np.clip(y_pred + margin, None, len(np.unique(y_pred)) - 1)
+            
+            return y_pred, lower_bound, upper_bound
+            
+        except Exception as e:
+            logger.error(f"Prediction with intervals failed: {e}")
+            raise ValueError(
+                f"Failed to generate predictions with intervals: {e}"
+            ) from e
+    
+    def get_feature_importance(self) -> Optional[Dict[str, float]]:
+        """Get feature importance scores."""
+        if self.model is None:
+            raise ValueError("Model must be fitted before getting importance")
+            
+        try:
+            importances = self.model.feature_importance()
+            if importances is None:
+                return None
+                
+            if isinstance(importances, dict):
+                importances = np.array([importances[i] for i in range(len(self.feature_names))])
+                
+            return dict(zip(self.feature_names, importances))
+            
+        except Exception as e:
+            logger.error(f"Feature importance calculation failed: {e}")
+            return None
 
 
 class XGBoostOrdinal(OrdinalModel):
@@ -102,19 +295,15 @@ class XGBoostOrdinal(OrdinalModel):
         self.model = XGBClassifier(
             n_estimators=n_estimators,
             max_depth=max_depth,
-            objective='reg:squarederror',  # Treats as regression
-            random_state=42
+            objective='multi:softmax',
+            eval_metric='mlogloss'
         )
     
     def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
-        y_encoded = self.label_encoder.fit_transform(y)
-        self.model.fit(X, y_encoded)
+        self.model.fit(X, y)
     
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        y_pred = self.model.predict(X)
-        return self.label_encoder.inverse_transform(
-            np.round(y_pred).astype(int)
-        )
+        return self.model.predict(X)
     
     def get_feature_importance(self) -> Dict[str, float]:
         return dict(zip(
@@ -124,83 +313,39 @@ class XGBoostOrdinal(OrdinalModel):
 
 
 class OrdinalLogistic(OrdinalModel):
-    """Ordinal Logistic Regression using statsmodels.
+    """Ordinal regression using mord's LogisticIT model."""
     
-    This implementation uses statsmodels' OrderedModel which properly accounts for
-    the ordinal nature of the target variable by modeling cumulative probabilities.
-    """
-    
-    def __init__(self, target_col: str):
-        """Initialize ordinal logistic model.
-        
-        Args:
-            target_col: Name of target column
-        """
+    def __init__(self, target_col: str) -> None:
         super().__init__(target_col)
-        self.fitted_model = None
-        self.feature_names = None
+        self.model = LogisticIT()
+        self.feature_names: Optional[List[str]] = None
     
     def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
-        """Fit ordinal logistic model.
-        
-        Args:
-            X: Feature DataFrame
-            y: Target series with ordinal values
-        """
-        self.feature_names = X.columns
-        y_encoded = self.label_encoder.fit_transform(y)
-        
-        # statsmodels requires a pandas DataFrame
-        model = OrderedModel(
-            y_encoded,
-            X,
-            distr='logit'  # Use logistic distribution
-        )
-        
-        # Fit model with maximum likelihood estimation
         try:
-            self.fitted_model = model.fit(
-                method='bfgs',  # More stable than default Newton
-                maxiter=1000,
-                disp=False
-            )
+            self.feature_names = X.columns.tolist()
+            self.model.fit(X, y)
         except Exception as e:
-            logger.error(f"Error fitting ordinal logistic model: {str(e)}")
-            raise
+            logger.error(f"Failed to fit ordinal model: {e}")
+            raise ValueError(f"Model fitting failed: {e}") from e
     
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Predict ordinal classes.
-        
-        Args:
-            X: Feature DataFrame
-            
-        Returns:
-            Array of predicted ordinal classes
-        """
-        if self.fitted_model is None:
+        if not hasattr(self.model, 'coef_'):
             raise ValueError("Model must be fitted before predicting")
-        
-        # Get predicted probabilities for each class
-        probs = self.fitted_model.predict(X)
-        
-        # Convert to class predictions (highest probability class)
-        y_pred = np.argmax(probs, axis=1)
-        
-        return self.label_encoder.inverse_transform(y_pred)
+        try:
+            return self.model.predict(X)
+        except Exception as e:
+            logger.error(f"Prediction failed: {e}")
+            raise ValueError(f"Failed to predict: {e}") from e
     
-    def get_feature_importance(self) -> Dict[str, float]:
-        """Get feature importance based on coefficient magnitudes.
-        
-        Returns:
-            Dictionary mapping feature names to importance scores
-        """
-        if self.fitted_model is None:
-            raise ValueError("Model must be fitted before getting importance")
-            
-        # Get absolute values of coefficients
-        coef = np.abs(self.fitted_model.params[self.feature_names])
-        
-        return dict(zip(self.feature_names, coef))
+    def get_feature_importance(self) -> Optional[Dict[str, float]]:
+        if not hasattr(self.model, 'coef_') or not self.feature_names:
+            return None
+        try:
+            importance = np.abs(self.model.coef_)
+            return dict(zip(self.feature_names, importance))
+        except Exception as e:
+            logger.warning(f"Failed to get feature importance: {e}")
+            return None
 
 
 class OrdinalNeuralNet(OrdinalModel):
@@ -309,8 +454,7 @@ class OrdinalNeuralNet(OrdinalModel):
         # Convert data to tensors
         X_tensor = self._to_tensor(X)
         self._last_X = X_tensor  # Save for feature importance
-        y_encoded = self.label_encoder.fit_transform(y)
-        y_tensor = torch.FloatTensor(y_encoded).to(self.device)
+        y_tensor = torch.FloatTensor(y.values).to(self.device)
         
         # Initialize optimizer and loss
         optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
@@ -355,11 +499,9 @@ class OrdinalNeuralNet(OrdinalModel):
             # Round to nearest integer and clip to valid range
             predictions = torch.round(outputs).clip(
                 min=0,
-                max=len(self.label_encoder.classes_) - 1
+                max=len(np.unique(X[self.target_col])) - 1
             )
-            return self.label_encoder.inverse_transform(
-                predictions.cpu().numpy().astype(int)
-            )
+            return predictions.cpu().numpy().astype(int)
 
 
 class ModelTrainer:
@@ -396,14 +538,10 @@ class ModelTrainer:
         Returns:
             List of ModelResults with evaluation metrics
         """
-        from sklearn.metrics import (
-            mean_absolute_error,
-            accuracy_score,
-            f1_score
-        )
         
         results = []
-        kf = KFold(
+        
+        kf = StratifiedKFold(
             n_splits=self.cv_folds,
             shuffle=True,
             random_state=self.random_state
@@ -420,8 +558,8 @@ class ModelTrainer:
                 'train_f1_weighted': []
             }
             
-            # Perform cross-validation manually
-            for fold_idx, (train_idx, test_idx) in enumerate(kf.split(X)):
+            # Perform cross-validation
+            for fold_idx, (train_idx, test_idx) in enumerate(kf.split(X, y)):
                 logger.info(f"Fold {fold_idx + 1}/{self.cv_folds}")
                 
                 # Split data
@@ -473,8 +611,10 @@ class ModelTrainer:
                 feature_importance = None
             
             results.append(ModelResults(
-                model_name=model.__class__.__name__,
-                cv_scores=cv_scores,
+                predictions=np.concatenate([
+                    y_pred_train,
+                    y_pred_test
+                ]),
                 feature_importance=feature_importance
             ))
             

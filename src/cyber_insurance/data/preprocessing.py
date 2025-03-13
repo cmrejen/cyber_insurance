@@ -140,7 +140,34 @@ class ICODataPreprocessor:
             f"{unknown_before} -> {unknown_after}"
         )
 
+        # Check class imbalance
+        self._check_class_imbalance(imputed_df)
+
         return imputed_df
+
+    def _check_class_imbalance(self, df: pd.DataFrame) -> None:
+        """Check for class imbalance in target variable.
+        
+        Args:
+            df: DataFrame to check
+        """
+        target_col = ColumnNames.NO_DATA_SUBJECTS_AFFECTED.value
+        total = len(df)
+        dist = df[target_col].value_counts()
+        dist_pct = (dist / total * 100).round(2)
+        
+        min_pct = dist_pct.min()
+        max_pct = dist_pct.max()
+        imbalance_ratio = max_pct / min_pct
+        
+        if imbalance_ratio > 10:
+            logger.warning(
+                f"(ratio: {imbalance_ratio:.2f}). Consider using class weights."
+            )
+        elif imbalance_ratio > 3:
+            logger.info(
+                f"(ratio: {imbalance_ratio:.2f})."
+            )
 
     def _plot_imputation_distribution(
         self,
@@ -265,6 +292,15 @@ class ICODataPreprocessor:
             drop_first=True,  # Avoid perfect multicollinearity
             prefix_sep="_",
         )
+        
+        # Remove columns that contain only zeros (categories not present in data)
+        zero_cols = dummy_df.columns[dummy_df.sum() == 0]
+        if len(zero_cols) > 0:
+            logger.info(
+                "Removing dummy columns with all zeros (categories not in data):\n"
+                + "\n".join(f"- {col}" for col in zero_cols)
+            )
+            dummy_df = dummy_df.drop(columns=zero_cols)
 
         # Drop original columns and add dummy columns
         self._df = self._df.drop(columns=CategoricalColumns.DUMMY_ENCODE_COLUMNS)
@@ -272,7 +308,7 @@ class ICODataPreprocessor:
 
         logger.info(
             "Dummy encoded columns (with drop_first=True):\n"
-            + "\n".join(f"- {col}" for col in CategoricalColumns.DUMMY_ENCODE_COLUMNS)
+            + "\n".join(f"- {col}" for col in dummy_df.columns)
         )
 
         # 2. Ordinal encode severity and time variables
