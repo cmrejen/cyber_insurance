@@ -1,6 +1,6 @@
 """Constants and enums for data processing."""
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Set, Tuple, Optional
 from pathlib import Path
 
 
@@ -23,6 +23,47 @@ class DataTypes(str, Enum):
     STRING = 'str'
     INTEGER = 'int'
     CATEGORY = 'category'
+
+
+class DataType(str, Enum):
+    """Valid data types with associated breach severity scores.
+    
+    Scores (1-10) are based on:
+    - Financial value to attackers (ransom/sale potential)
+    - Organization's willingness to pay to prevent disclosure
+    - Scale of potential financial exploitation
+    - Market value on dark web/to competitors
+    - Potential for large-scale fraud/monetization
+    """
+    ECONOMIC_AND_FINANCIAL = "Economic and financial data", 10  # Highest: Direct financial exploitation, immediate monetization
+    IDENTIFICATION = "Identification data", 9  # Critical: Key for identity theft, fraud at scale
+    GENETIC_OR_BIOMETRIC = "Genetic or biometric data", 9  # Critical: Unique identifiers, high corporate value
+    HEALTH = "Health data", 8  # High: Valuable to insurers/pharma, strong ransom leverage
+    CRIMINAL_CONVICTIONS = "Criminal convictions or offences", 8  # High: Strong blackmail potential for high-value targets
+    OFFICIAL_DOCUMENTS = "Official documents", 7  # Significant: Essential for identity theft schemes
+    BASIC_PERSONAL_IDENTIFIERS = "Basic personal identifiers", 7  # Significant: Foundation for large-scale fraud
+    SEX_LIFE = "Sex life data", 6  # Medium-high: Blackmail potential for high-net-worth individuals
+    LOCATION = "Location data", 5  # Medium: Valuable for targeted attacks/stalking
+    RACIAL_OR_ETHNIC = "Data revealing racial or ethnic origin", 4  # Lower: Limited direct monetization
+    GENDER_REASSIGNMENT = "Gender Reassignment Data", 4  # Lower: Limited financial exploitation potential
+    RELIGIOUS_OR_PHILOSOPHICAL = "Religious or philosophical beliefs", 3  # Low: Minimal financial value
+    SEXUAL_ORIENTATION = "Sexual orientation data", 3  # Low: Limited large-scale exploitation potential
+    TRADE_UNION = "Trade union membership", 2  # Very low: Minimal financial incentive
+    POLITICAL_OPINIONS = "Political opinions", 2  # Very low: Often public, limited exploitation value
+
+    def __new__(cls, value: str, score: int) -> 'DataType':
+        obj = str.__new__(cls, value)
+        obj._value_ = value
+        obj.score = score
+        return obj
+
+    @classmethod
+    def get_score(cls, value: str) -> int:
+        """Get breach severity score for a data type value."""
+        try:
+            return next(member.score for member in cls if member.value == value)
+        except StopIteration:
+            return 0  # Default score for unknown data types
 
 
 class OrdinalMapping:
@@ -49,6 +90,19 @@ class OrdinalMapping:
         '72 hours to 1 week': 2,
         'More than 1 week': 3
     }
+    
+    _EXCLUDED = {'Unknown'}
+    
+    @classmethod
+    def filtered_names(cls, enum_dict: Dict[str, int]) -> List[str]:
+        """Get filtered category names in ordinal order (post-imputation)."""
+        return sorted([k for k in enum_dict if k not in cls._EXCLUDED],
+                    key=lambda k: enum_dict[k])
+    
+    @classmethod
+    def filtered_values(cls, enum_dict: Dict[str, int]) -> List[int]:
+        """Get filtered ordinal values in ordinal order (post-imputation)."""
+        return [enum_dict[k] for k in cls.filtered_names(enum_dict)]
 
 
 class CategoricalColumns:
@@ -95,21 +149,68 @@ class CategoricalColumns:
             'Marketing', 'Political', 'Unassigned', 'Unknown'
         ]
     }
+    
+    # Additional ordinal columns (after encoding or transformation)
+    ADDITIONAL_ORDINAL_COLUMNS: List[str] = [
+        'Data Type Score',
+        'Data Subject Type Count',
+        'Years Since Start'
+    ]
+    
+    @classmethod
+    def get_ordinal_columns(cls) -> Set[str]:
+        """Get all ordinal columns after encoding."""
+        return set(cls.ORDINAL_ENCODE_COLUMNS.keys()) | set(cls.ADDITIONAL_ORDINAL_COLUMNS)
+    
+    @classmethod
+    def is_dummy_encoded(cls, col: str) -> bool:
+        """Check if a column is a dummy-encoded version of original columns."""
+        return any(
+            col.startswith(f"{base_col}_") 
+            for base_col in cls.DUMMY_ENCODE_COLUMNS
+        )
+
+    _EXCLUDED = {
+        ColumnNames.SECTOR.value: {'Unknown', 'Unassigned'}
+    }
+    
+    @classmethod
+    def filtered_categories(cls, categories: List[str], column_name: str) -> List[str]:
+        """Get filtered categories list (post-imputation).
+        
+        Args:
+            categories: List of categories to filter
+            column_name: Name of the column
+            
+        Returns:
+            Filtered list of categories
+        """
+        excluded = cls._EXCLUDED.get(column_name, set())
+        return [cat for cat in categories if cat not in excluded]
 
 
 class ModelParams:
     """Hyperparameters for machine learning models."""
     
     # Random Forest tuning ranges with proper type hints
-    RF_N_ESTIMATORS: List[int] = [100, 200]  # Reduced range for faster tuning
-    RF_MIN_SAMPLES_LEAF: List[int] = [3, 5]  # Conservative values
-    RF_MAX_FEATURES: List[int] = [5]  # Fixed value based on feature importance
+    RF_N_ESTIMATORS: List[int] = [100, 200, 500]  # Best: MAE: 200 > CEM (SMOTEN-Under.): 500
+    RF_MIN_SAMPLES_LEAF: List[int] = [3, 5, 10]  # Best: MAE: 5 > CEM (SMOTEN-Under.): 3     
+    RF_MAX_FEATURES: List[int] = [5, 10, 15]  # Best: MAE: 10 > CEM (SMOTEN-Under.): 5
     
-    # Neural Network parameters
-    NN_HIDDEN_DIMS: List[int] = [32, 64, 128]
-    NN_LEARNING_RATE: List[float] = [0.001, 0.01]
-    NN_BATCH_SIZE: List[int] = [32, 64]
-    NN_EPOCHS: int = 100
+    # Ordinal Logistic parameters
+    OL_ALPHA: List[float] = [0.001, 0.01, 0.1, 1.0, 10.0]  # Regularization
+    
+    # CatBoost parameters
+    CB_ITERATIONS: List[int] = [1000, 2000] # Best: 1000
+    CB_LEARNING_RATE: List[float] = [0.01, 0.1] # Best: 0.1
+    CB_DEPTH: List[int] = [4, 6] # Best: 4
+    CB_L2_LEAF_REG: List[int] = [3, 6] # Best: 3
+    
+    # PyTorchOrdinal parameters
+    PTORDINAL_HIDDEN_LAYER_SIZES: List[Tuple[int, ...]] = [(64,), (128, 64)]
+    PTORDINAL_LR: List[float] = [0.001, 0.01]
+    PTORDINAL_BATCH_SIZE: List[int] = [32, 64]
+    PTORDINAL_EPOCHS: List[int] = [50, 100]
 
 
 class InputPaths:
@@ -157,6 +258,18 @@ class OutputPaths:
     MISSING_CONTINUOUS = MISSING_ANALYSIS_DIR / "continuous"
     IMPUTATION = MISSING_ANALYSIS_DIR / "imputation"
     
+    # Hyperparameter tuning subdirectories
+    HYPERPARAMETER_TUNING_DIR = MODEL_DIR / "hyperparameter_tuning"
+    
+    # Model-specific hyperparameter tuning directories
+    CATBOOST_TUNING_DIR = HYPERPARAMETER_TUNING_DIR / "catboost"
+    NEURAL_NET_TUNING_DIR = HYPERPARAMETER_TUNING_DIR / "neural_net"
+    RANDOM_FOREST_TUNING_DIR = HYPERPARAMETER_TUNING_DIR / "random_forest"
+    ORDINAL_LOGISTIC_TUNING_DIR = HYPERPARAMETER_TUNING_DIR / "ordinal_logistic"
+    
+    # SMOTE directory
+    IMBALANCED_DISTRIBUTION_DIR = BASE_DIR / "smote"
+
     # List of all directories to create
     ALL_DIRS: List[Path] = [
         BASE_DIR,
@@ -167,7 +280,13 @@ class OutputPaths:
         MISSING_CONTINUOUS,
         IMPUTATION,
         MODEL_DIR,
-        MODEL_EVALUATION_DIR
+        MODEL_EVALUATION_DIR,
+        HYPERPARAMETER_TUNING_DIR,
+        IMBALANCED_DISTRIBUTION_DIR,
+        CATBOOST_TUNING_DIR,
+        NEURAL_NET_TUNING_DIR,
+        RANDOM_FOREST_TUNING_DIR,
+        ORDINAL_LOGISTIC_TUNING_DIR
     ]
     
     @classmethod

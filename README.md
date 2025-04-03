@@ -1,6 +1,6 @@
 # Cyber Insurance ML Pipeline
 
-This project implements a machine learning pipeline for modeling cyber insurance risk, specifically focusing on the frequency of cyber events per firm. It compares classical actuarial techniques with modern machine learning approaches.
+This project implements a machine learning pipeline for modeling cyber insurance risk using ordinal classification approaches. It features advanced preprocessing techniques, including ordinal-aware SMOTE for handling class imbalance, and multiple model implementations optimized for ordinal targets.
 
 ## Project Structure
 
@@ -10,11 +10,21 @@ cyber_insurance/
 │   └── Cyber Events Database.xlsx
 ├── src/                     # Source code
 │   └── cyber_insurance/
-│       ├── data/           # Data processing modules
-│       │   └── ingestion.py
+│       ├── analysis/       # Analysis modules
+│       │   ├── hyperparameter_tuning_analysis.py
+│       │   ├── initial_data_analysis.py
+│       │   └── missing_data_analysis.py
+│       ├── data/           # Data processing
+│       │   ├── ingestion.py
+│       │   └── preprocessing.py
 │       ├── models/         # ML models
-│       └── visualization/  # Visualization utilities
-├── notebooks/              # Jupyter notebooks for analysis
+│       │   ├── hyperparameter_tuning.py
+│       │   ├── model_evaluator.py
+│       │   └── model_trainer.py
+│       ├── utils/          # Utilities
+│       │   ├── constants.py
+│       │   └── logger.py
+│       └── main.py         # Pipeline entry point
 ├── pyproject.toml          # Project dependencies
 └── README.md              # Project documentation
 ```
@@ -37,22 +47,148 @@ uv venv
 uv pip install -e .
 ```
 
-## Usage
+## Core Components
 
-The main components of the pipeline are:
+### 1. Data Processing (`data/`)
 
-1. Data Ingestion: Loading and preprocessing cyber event data
-2. Feature Engineering: Creating relevant features for modeling
-3. Model Training: Implementation of both classical actuarial and ML models
-4. Model Evaluation: Comparing model performances
-5. Visualization: Analyzing and visualizing results
+#### Data Ingestion (`ingestion.py`)
+- Loads raw data from Excel files
+- Performs initial data validation
+- Handles date parsing and basic cleaning
 
-## Data
+#### Data Preprocessing (`preprocessing.py`)
+- **Feature Engineering**: Creates relevant features for modeling
+- **Missing Value Handling**: Uses iterative imputation
+- **Class Imbalance**: Implements ordinal-aware SMOTE
+- **Categorical Encoding**: Preserves ordinal relationships
 
-The project uses cyber event data with the following key features:
-- Company information
-- Event dates
-- Event types
-- Other relevant attributes
+### 2. Models (`models/`)
 
-The pipeline processes this data to create a frequency-based dataset where each record represents the number of cyber events per firm.
+#### Model Trainer (`model_trainer.py`)
+Implements four model types:
+1. **Ordinal Logistic Regression**
+   - Uses `mord.LogisticIT`
+   - Handles ordinal targets natively
+   - L2 regularization with tunable alpha
+
+2. **Random Forest Ordinal**
+   - Based on Ordered Random Forests
+   - Supports honest splitting
+   - Automatic hyperparameter tuning
+
+3. **XGBoost Ordinal**
+   - Modified for ordinal targets
+   - Feature importance tracking
+   - Multi-class softmax objective
+
+4. **Neural Network**
+   - Ordinal-aware architecture
+   - Dropout regularization
+   - Integrated gradients for interpretability
+
+#### Hyperparameter Tuning (`hyperparameter_tuning.py`)
+- Grid search with cross-validation
+- Model-specific parameter ranges
+- Performance tracking and logging
+
+#### Model Evaluator (`model_evaluator.py`)
+- Calculates metrics (MAE, accuracy, F1)
+- Generates comparison plots
+- Feature importance visualization
+
+### 3. Analysis (`analysis/`)
+
+#### Hyperparameter Analysis
+- Parameter sensitivity studies
+- Cross-validation results
+- Learning curves
+
+#### Data Analysis
+- Distribution analysis
+- Missing value patterns
+- Feature correlations
+
+## Running the Pipeline
+
+### Basic Usage
+```python
+from pathlib import Path
+from cyber_insurance.main import run_pipeline
+
+# Run complete pipeline
+data_path = Path("data/Cyber Events Database.xlsx")
+run_pipeline(data_path)
+```
+
+### Custom Model Training
+```python
+from cyber_insurance.models.model_trainer import RandomForestOrdinal
+
+# Initialize with custom parameters
+model = RandomForestOrdinal(
+    target_col="severity",
+    n_estimators=200,
+    min_samples_leaf=5
+)
+
+# Train and predict
+model.fit(X_train, y_train)
+predictions = model.predict(X_test)
+```
+
+## Key Features
+
+1. **Ordinal-Aware Processing**
+   - Preserves ordinal relationships
+   - Handles class imbalance
+   - Maintains data type integrity
+
+2. **Model Comparison Framework**
+   - Consistent evaluation metrics
+   - Cross-validation support
+   - Feature importance analysis
+
+3. **Extensible Architecture**
+   - Abstract base classes
+   - Type hints throughout
+   - Comprehensive logging
+
+4. **Performance Optimization**
+   - Parallel processing support
+   - Memory-efficient operations
+   - GPU acceleration (Neural Network)
+
+## Output and Visualization
+
+The pipeline generates:
+1. Model performance metrics
+2. Feature importance plots
+3. Cross-validation results
+4. Parameter sensitivity analysis
+5. Distribution comparisons
+
+## Logging
+
+All components use structured logging:
+```python
+from cyber_insurance.utils.logger import setup_logger
+logger = setup_logger("component_name")
+```
+
+## Contributing
+
+1. Follow PEP 8 guidelines
+2. Include type hints
+3. Add comprehensive docstrings
+4. Write unit tests for new features
+
+## Dependencies
+
+Core requirements:
+- numpy
+- pandas
+- scikit-learn
+- torch
+- xgboost
+- mord
+- imblearn

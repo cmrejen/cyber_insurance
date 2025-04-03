@@ -223,9 +223,9 @@ class MissingDataAnalyzer:
         plot_df = self._df.copy()
         plot_df[indicator.name] = indicator
 
-        # Create boxplot of years_since_start by missingness
+        # Create boxplot of Years Since Start by missingness
         plt.figure(figsize=(8, 6))
-        sns.boxplot(data=plot_df, x=indicator.name, y="years_since_start")
+        sns.boxplot(data=plot_df, x=indicator.name, y="Years Since Start")
         plt.title(f"Distribution of Years by {target_col} Missingness")
         plt.xlabel("Missing")
         plt.ylabel("Years Since Start")
@@ -240,7 +240,7 @@ class MissingDataAnalyzer:
         plt.close()
 
         # Calculate and log correlation
-        corr = plot_df["years_since_start"].corr(indicator)
+        corr = plot_df["Years Since Start"].corr(indicator)
         logger.info(
             f"Correlation between {target_col} missingness and years: " f"{corr:.3f}"
         )
@@ -349,7 +349,7 @@ class MissingDataAnalyzer:
         # Calculate missing percentages by year
         missing_by_year = {}
         for col in self._missing_indicators.keys():
-            yearly_missing = self._df.groupby("years_since_start")[col].apply(
+            yearly_missing = self._df.groupby("Years Since Start")[col].apply(
                 lambda x: x.isnull().mean() * 100
             )
             missing_by_year[col] = yearly_missing

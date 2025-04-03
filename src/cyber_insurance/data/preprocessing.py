@@ -1,6 +1,6 @@
 """Module for preprocessing ICO breach data."""
 
-from typing import Optional, List
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -11,11 +11,228 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sklearn.experimental import enable_iterative_imputer  # noqa: F401
 from sklearn.impute import IterativeImputer
+from imblearn.over_sampling import SMOTEN
+from imblearn.under_sampling import RandomUnderSampler
+from collections import Counter
 
-from cyber_insurance.utils.constants import ColumnNames, CategoricalColumns, OutputPaths
+from cyber_insurance.utils.constants import (
+    ColumnNames, 
+    CategoricalColumns, 
+    OutputPaths,
+    DataType
+)
 from cyber_insurance.utils.logger import setup_logger
 
 logger = setup_logger("ico_data_preprocessing")
+
+
+class CategoricalSMOTE(SMOTEN):
+    """SMOTE variant for categorical features.
+    
+    This class extends SMOTEN since all our features are categorical
+    (either dummy-encoded or ordinal). SMOTEN is specifically designed
+    for nominal/categorical features and uses the Value Difference Metric
+    for computing distances between categorical values.
+    
+    Attributes:
+        dummy_features: Set of indices for dummy-encoded features
+        ordinal_features: Set of indices for ordinal features
+    """
+    
+    def __init__(
+        self,
+        dummy_features: List[int],
+        ordinal_features: List[int],
+        sampling_strategy: str = "auto",
+        random_state: Optional[int] = None,
+        k_neighbors: int = 5
+    ) -> None:
+        """Initialize CategoricalSMOTE.
+        
+        Args:
+            dummy_features: Indices of dummy-encoded features
+            ordinal_features: Indices of ordinal features
+            sampling_strategy: Sampling strategy, default="auto"
+            random_state: Random seed, default=None
+            k_neighbors: Number of nearest neighbors, default=5
+            
+        Raises:
+            ValueError: If feature indices are invalid or overlapping
+        """
+        if set(dummy_features) & set(ordinal_features):
+            raise ValueError("Dummy and ordinal feature indices must not overlap")
+            
+        super().__init__(
+            sampling_strategy=sampling_strategy,
+            random_state=random_state,
+            k_neighbors=k_neighbors,
+        )
+        self.dummy_features: Set[int] = set(dummy_features)
+        self.ordinal_features: Set[int] = set(ordinal_features)
+
+
+class OrdinalSMOTEResampler:
+    """Ordinal-aware SMOTE implementation that preserves feature types."""
+    
+    @staticmethod
+    def calculate_sampling_strategy(y: pd.Series) -> Dict[int, int]:
+        """Calculate balanced sampling strategy.
+        
+        Args:
+            y: Target variable
+            
+        Returns:
+            Dictionary mapping class labels to target counts
+        """
+        class_counts = Counter(y)
+        majority_class = max(class_counts.items(), key=lambda x: x[1])[0]
+        majority_count = class_counts[majority_class]
+        target_minority = majority_count // 3
+        
+        return {
+            label: max(count, target_minority)
+            for label, count in class_counts.items()
+        }
+    
+    @staticmethod
+    def get_undersampling_strategy(y: pd.Series, ratio: float = 0.75) -> Dict[int, int]:
+        """Calculate undersampling strategy for majority class.
+        
+        Args:
+            y: Target variable
+            ratio: Desired ratio between second largest and majority class
+            
+        Returns:
+            Dictionary with sampling strategy for RandomUnderSampler
+        """
+        counts = Counter(y)
+        sorted_counts = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+        majority_class, majority_count = sorted_counts[0]
+        second_class, second_count = sorted_counts[1]
+        
+        # Target count for majority class based on ratio
+        target_majority = int(second_count / ratio)
+        return {majority_class: target_majority}
+    
+    @staticmethod
+    def get_oversampling_strategy(y: pd.Series) -> Dict[int, int]:
+        """Calculate oversampling strategy for minority classes.
+        
+        Args:
+            y: Target variable
+            
+        Returns:
+            Dictionary with sampling strategy for SMOTE
+        """
+        counts = Counter(y)
+        majority_count = max(counts.values())
+        
+        # Target counts for specific classes as percentage of majority
+        return {
+            1: int(0.60 * majority_count),
+            5: int(0.50 * majority_count),
+            6: int(0.70 * majority_count)
+        }
+    
+    def __init__(
+        self,
+        k_neighbors: int = 5,
+        random_state: int = 42,
+        sampling_strategy: Union[str, Dict[int, int]] = "auto"
+    ) -> None:
+        """Initialize resampler.
+        
+        Args:
+            k_neighbors: Number of nearest neighbors
+            random_state: Random seed
+            sampling_strategy: Either "auto" or dict with {class_label: n_samples}
+        """
+        self.k_neighbors = k_neighbors
+        self.random_state = random_state
+        self.sampling_strategy = sampling_strategy
+    
+    def fit_resample(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series
+    ) -> Tuple[pd.DataFrame, pd.Series]:
+        """Resample data preserving categorical and ordinal features.
+        
+        Args:
+            X: Feature matrix
+            y: Target variable
+            
+        Returns:
+            Resampled X and y
+        """
+        # First undersample majority class
+        undersampler = RandomUnderSampler(
+            sampling_strategy=self.get_undersampling_strategy(y),
+            random_state=self.random_state
+        )
+        X_under, y_under = undersampler.fit_resample(X, y)
+        
+        # Identify dummy and ordinal features
+        dummy_features = []
+        ordinal_features = []
+        
+        for idx, col in enumerate(X_under.columns):
+            is_dummy = CategoricalColumns.is_dummy_encoded(col)
+            if is_dummy:
+                dummy_features.append(idx)
+            elif col in CategoricalColumns.get_ordinal_columns():
+                ordinal_features.append(idx)
+        
+        # Create categorical-aware SMOTE with specific strategy
+        sampler = CategoricalSMOTE(
+            dummy_features=dummy_features,
+            ordinal_features=ordinal_features,
+            k_neighbors=self.k_neighbors,
+            random_state=self.random_state,
+            sampling_strategy=self.get_oversampling_strategy(y_under)
+        )
+        
+        # Apply resampling
+        X_resampled, y_resampled = sampler.fit_resample(X_under, y_under)
+        
+        # Convert back to pandas
+        X_resampled = pd.DataFrame(X_resampled, columns=X.columns)
+        y_resampled = pd.Series(y_resampled, name=y.name)
+        
+        # Verify feature characteristics are preserved
+        self._verify_features(X, X_resampled)
+        
+        return X_resampled, y_resampled
+    
+    def _verify_features(
+        self,
+        X_orig: pd.DataFrame,
+        X_resampled: pd.DataFrame
+    ) -> None:
+        """Verify that feature characteristics are preserved.
+        
+        Args:
+            X_orig: Original features
+            X_resampled: Resampled features
+        """
+        for col in X_orig.columns:
+            if CategoricalColumns.is_dummy_encoded(col):
+                # Check binary features
+                unique_vals = X_resampled[col].unique()
+                if not np.all(np.isin(unique_vals, [0, 1])):
+                    logger.warning(
+                        f"Binary feature {col} contains non-binary values: "
+                        f"{unique_vals}"
+                    )
+            else:
+                # Check ordinal features
+                orig_vals = set(X_orig[col].unique())
+                new_vals = set(X_resampled[col].unique())
+                if not new_vals.issubset(orig_vals):
+                    logger.warning(
+                        f"Ordinal feature {col} contains new values: "
+                        f"{new_vals - orig_vals}"
+                    )
 
 
 class ICODataPreprocessor:
@@ -24,12 +241,17 @@ class ICODataPreprocessor:
     def __init__(self):
         """Initialize the preprocessor."""
         self._df: Optional[pd.DataFrame] = None
+        self.ordinal_smote = OrdinalSMOTEResampler(
+            k_neighbors=5,
+            random_state=42
+        )
 
     def preprocess(
         self,
         df: pd.DataFrame,
         encode_variables: bool = True,
         impute_missing: bool = True,
+        handle_imbalance: bool = False,
     ) -> pd.DataFrame:
         """Preprocess the ICO breach data.
 
@@ -38,9 +260,10 @@ class ICODataPreprocessor:
         2. Convert multiple entries to single row with counts
         3. Validate data types
         4. Remove low percentage unknown/unassigned values
-        5. Transform year to years_since_start (for scale reduction)
+        5. Transform year to Years Since Start (for scale reduction)
         6. Impute missing values (optional)
         7. Encode categorical and ordinal variables (optional)
+        8. Handle target class imbalance using OrdinalSMOTE
 
         Args:
             df: Input DataFrame
@@ -65,14 +288,14 @@ class ICODataPreprocessor:
 
         # Step 3: Validate data types and categories
         self._validate_column_types()
-        # TODO: Investigate the effectiveness of removing low percentage unknown/unassigned values
+
         # Step 4: Remove low percentage unknown/unassigned values
         self._remove_low_percentage_unknown()
 
-        # Step 5: Transform year to reduce scale
+        # Step 5: Transform year to Years Since Start (for scale reduction)
         self._transform_year()
 
-        # Step 6: Impute missing values and encode categorical variables if requested
+        # Step 6 & 7: Impute missing values and encode categorical variables if requested
         if impute_missing:
             logger.info("Imputing missing values...")
             if encode_variables:
@@ -82,6 +305,10 @@ class ICODataPreprocessor:
             if encode_variables:
                 logger.info("Encoding categorical variables...")
                 self.encode_variables()
+
+        # Step 8: Handle target class imbalance using OrdinalSMOTE
+        if handle_imbalance:
+            self._handle_class_imbalance()
 
         return self._df
 
@@ -152,21 +379,19 @@ class ICODataPreprocessor:
             df: DataFrame to check
         """
         target_col = ColumnNames.NO_DATA_SUBJECTS_AFFECTED.value
-        total = len(df)
-        dist = df[target_col].value_counts()
-        dist_pct = (dist / total * 100).round(2)
-        
-        min_pct = dist_pct.min()
-        max_pct = dist_pct.max()
-        imbalance_ratio = max_pct / min_pct
+        dist = Counter(df[target_col]).values()
+        imbalance_ratio = max(dist) / min(dist)
         
         if imbalance_ratio > 10:
             logger.warning(
-                f"(ratio: {imbalance_ratio:.2f}). Consider using class weights."
+                f"Class imbalance ratio of {imbalance_ratio:.2f} detected. "
+                f"This may negatively impact model performance. "
+                f"Consider using class weights."
             )
         elif imbalance_ratio > 3:
             logger.info(
-                f"(ratio: {imbalance_ratio:.2f})."
+                f"Class imbalance ratio of {imbalance_ratio:.2f} detected. "
+                f"This may impact model performance."
             )
 
     def _plot_imputation_distribution(
@@ -474,7 +699,7 @@ class ICODataPreprocessor:
             raise ValueError("No data loaded.")
 
         # Create new column names for counts
-        data_type_count = "Data Type Count"
+        data_type_score = "Data Type Score"
         subject_type_count = "Data Subject Type Count"
 
         # Validate that other columns have indeed unique values per BI Reference
@@ -516,12 +741,12 @@ class ICODataPreprocessor:
                 + "\n".join(issues)
             )
 
-        # Group by BI Reference and calculate counts
+        # Group by BI Reference and calculate counts/scores
         grouped = (
             self._df.groupby(ColumnNames.BI_REFERENCE.value)
             .agg(
                 {
-                    ColumnNames.DATA_TYPE.value: lambda x: len(x.unique()),
+                    ColumnNames.DATA_TYPE.value: lambda x: sum(DataType.get_score(data_type) for data_type in x.unique()),
                     ColumnNames.DATA_SUBJECT_TYPE.value: lambda x: len(x.unique()),
                     ColumnNames.YEAR.value: "first",
                     ColumnNames.QUARTER.value: "first",
@@ -535,16 +760,16 @@ class ICODataPreprocessor:
             .reset_index()
         )
 
-        # Rename count columns
+        # Rename columns
         grouped = grouped.rename(
             columns={
-                ColumnNames.DATA_TYPE.value: data_type_count,
+                ColumnNames.DATA_TYPE.value: data_type_score,
                 ColumnNames.DATA_SUBJECT_TYPE.value: subject_type_count,
             }
         )
 
         # Ensure counts are integers
-        grouped[data_type_count] = grouped[data_type_count].astype(int)
+        grouped[data_type_score] = grouped[data_type_score].astype(int)
         grouped[subject_type_count] = grouped[subject_type_count].astype(int)
 
         logger.info(f"Consolidated {len(self._df) - len(grouped)} duplicate entries")
@@ -556,7 +781,7 @@ class ICODataPreprocessor:
             raise ValueError("No data loaded.")
 
         # Check count columns are integers
-        count_cols = ["Data Type Count", "Data Subject Type Count"]
+        count_cols = ["Data Type Score", "Data Subject Type Count"]
         for col in count_cols:
             if not pd.api.types.is_integer_dtype(self._df[col]):
                 raise ValueError(f"Column {col} is not integer type")
@@ -601,9 +826,9 @@ class ICODataPreprocessor:
                 )
 
     def _transform_year(self) -> None:
-        """Transform year to years_since_start.
+        """Transform year to Years Since Start.
 
-        Creates a new feature 'years_since_start' representing the number
+        Creates a new feature 'Years Since Start' representing the number
         of years since the earliest year in the dataset. This helps reduce
         the scale of the year variable while maintaining temporal ordering.
         """
@@ -611,14 +836,146 @@ class ICODataPreprocessor:
             raise ValueError("No data loaded.")
 
         min_year = self._df[ColumnNames.YEAR.value].min()
-        self._df["years_since_start"] = self._df[ColumnNames.YEAR.value] - min_year
+        self._df["Years Since Start"] = self._df[ColumnNames.YEAR.value] - min_year
 
         # Drop original year column as it's now transformed
         self._df = self._df.drop(columns=[ColumnNames.YEAR.value])
 
         logger.info(
-            f"Transformed year to years_since_start (reference year: {min_year})"
+            f"Transformed year to Years Since Start (reference year: {min_year})"
         )
+
+    def _handle_class_imbalance(self) -> None:
+        """Handle target class imbalance using balanced sampling.
+        
+        For severe imbalance (ratio > 10:1), uses a balanced strategy:
+        1. Keeps majority class size unchanged
+        2. Increases minority classes proportionally
+        3. Maintains reasonable total dataset size
+        
+        Raises:
+            ValueError: If DataFrame is not initialized
+        """
+        if self._df is None:
+            raise ValueError("DataFrame must be initialized before handling imbalance")
+            
+        target_col = ColumnNames.NO_DATA_SUBJECTS_AFFECTED.value
+        
+        # Check class distribution
+        class_counts = Counter(self._df[target_col])
+        imbalance_ratio = max(class_counts.values()) / min(class_counts.values())
+        
+        if imbalance_ratio > 3:
+            logger.info(
+                f"Severe class imbalance detected (ratio: {imbalance_ratio:.2f})"
+            )
+            
+            # Split features and target
+            X = self._df.drop(columns=[target_col])
+            y = self._df[target_col]
+            
+            try:
+                # Calculate balanced sampling strategy
+                sampling_strategy = OrdinalSMOTEResampler.calculate_sampling_strategy(y)
+                
+                logger.info(
+                    "Using balanced sampling strategy: "
+                    f"{dict(sorted(sampling_strategy.items()))}"
+                )
+                
+                # Initialize resampler with balanced strategy
+                self.ordinal_smote = OrdinalSMOTEResampler(
+                    k_neighbors=5,
+                    random_state=42,
+                    sampling_strategy=sampling_strategy
+                )
+                
+                # Apply resampling
+                X_resampled, y_resampled = self.ordinal_smote.fit_resample(X, y)
+                
+                # Update DataFrame
+                self._df = pd.concat([X_resampled, y_resampled], axis=1)
+                
+                # Log new distribution
+                new_counts = Counter(y_resampled)
+                new_ratio = max(new_counts.values()) / min(new_counts.values())
+                logger.info(
+                    f"New class distribution - imbalance ratio: {new_ratio:.2f}"
+                )
+                
+                # Plot distribution comparison
+                self._plot_class_distribution(
+                    class_counts,
+                    new_counts,
+                    target_col
+                )
+                
+            except Exception as e:
+                logger.error(f"Failed to apply resampling: {str(e)}")
+                logger.warning("Proceeding with original imbalanced data")
+        else:
+            logger.info(
+                f"Class imbalance within acceptable range "
+                f"(ratio: {imbalance_ratio:.2f})"
+            )
+
+    def _plot_class_distribution(
+        self,
+        original_dist: Dict[int, int],
+        new_dist: Dict[int, int],
+        target_col: str
+    ) -> None:
+        """Plot class distribution before and after resampling.
+        
+        Creates a bar plot comparing the class distribution before and after
+        applying SMOTE resampling. The plot shows the frequency of each class
+        in both distributions side by side.
+        
+        Args:
+            original_dist: Original class distribution as Counter dict
+            new_dist: Resampled class distribution as Counter dict
+            target_col: Name of the target column being resampled
+            
+        Note:
+            The plot is saved to the output directory and not displayed
+            directly to maintain compatibility with non-interactive
+            environments.
+        """
+        plt.figure(figsize=(10, 6))
+        
+        # Get all unique classes
+        classes = sorted(set(original_dist.keys()) | set(new_dist.keys()))
+        x = np.arange(len(classes))
+        width = 0.35
+        
+        # Create bars
+        plt.bar(
+            x - width/2,
+            [original_dist.get(c, 0) for c in classes],
+            width,
+            label='Original'
+        )
+        plt.bar(
+            x + width/2,
+            [new_dist.get(c, 0) for c in classes],
+            width,
+            label='After SMOTE'
+        )
+        
+        # Customize plot
+        plt.xlabel('Class')
+        plt.ylabel('Frequency')
+        plt.title(f'Class Distribution Before and After SMOTE\n{target_col}')
+        plt.xticks(x, classes)
+        plt.legend()
+        
+        # Save plot
+        OutputPaths.create_directories()
+        output_path = OutputPaths.IMBALANCED_DISTRIBUTION_DIR / 'smote_distribution.png'
+        plt.savefig(output_path)
+        plt.close()
+        
+        logger.info(f"Class distribution plot saved to {output_path}")
 
     @property
     def data(self) -> pd.DataFrame:

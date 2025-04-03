@@ -1,5 +1,7 @@
 """Model evaluation and comparison utilities for cyber insurance models."""
-from typing import List
+from typing import List, Union
+from sklearn.base import BaseEstimator
+from typing import Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,7 +11,7 @@ import seaborn as sns
 from cyber_insurance.models.model_trainer import ModelResults
 from cyber_insurance.utils.constants import OutputPaths
 
-
+from imblearn.metrics import macro_averaged_mean_absolute_error
 class ModelEvaluator:
     """Evaluates and compares model performance."""
     
@@ -132,7 +134,7 @@ class ModelEvaluator:
         print("\nModel Evaluation Summary:")
         print("-" * 50)
         
-        metrics = ['mae', 'accuracy', 'f1_weighted']
+        metrics = ['mae', 'accuracy', 'f1_weighted', 'weighted_mae']
         
         for metric in metrics:
             print(f"\n{metric.upper()} Scores:")
@@ -144,3 +146,120 @@ class ModelEvaluator:
                     f"Train: {np.mean(train_scores):.3f} ± {np.std(train_scores):.3f}  "
                     f"Test: {np.mean(test_scores):.3f} ± {np.std(test_scores):.3f}"
                 )
+
+
+def weighted_mae_score(
+    y_true: Union[pd.Series, np.ndarray],
+    y_pred: Union[pd.Series, np.ndarray],
+    class_weights: np.ndarray
+) -> float:
+    """
+    Calculate Weighted Mean Absolute Error for ordinal classification.
+    
+    This implementation combines:
+    1. Standard MAE for ordinal regression: |y_true - y_pred|
+    2. Custom class weights that are:
+       a) Inversely proportional to class frequency
+       b) Normalized to sum to n_classes
+    
+    The formula is:
+        WMAE = mean(|y_true - y_pred| * w[y_true])
+    where w[i] is normalized to ensure consistent scale across different
+    class distributions.
+    
+    Args:
+        y_true: True ordinal labels (1-based indexing)
+        y_pred: Predicted ordinal labels (1-based indexing)
+        class_weights: Array of weights for each class (from training data)
+        
+    Returns:
+        Weighted MAE score (lower is better).
+    """
+    if isinstance(y_true, pd.Series):
+        y_true = y_true.to_numpy()
+    if isinstance(y_pred, pd.Series):
+        y_pred = y_pred.to_numpy()
+        
+    # Calculate absolute errors (ordinal distance)
+    abs_errors = np.abs(y_true - y_pred)
+    
+    # Weight errors using pre-computed weights from training data
+    weighted_errors = abs_errors * class_weights[y_true.astype(int) - 1]
+    
+    return np.mean(weighted_errors)
+
+
+def compute_class_weights(y: Union[pd.Series, np.ndarray]) -> np.ndarray:
+    """
+    Compute balanced class weights inversely proportional to class frequencies.
+    
+    The weighting scheme uses:
+    1. Basic inverse frequency: n_samples / (n_classes * class_count)
+    2. Additional normalization to ensure weights sum to n_classes
+    
+    This differs from sklearn's compute_class_weight in that we add the 
+    normalization step to ensure the weights are on a consistent scale
+    regardless of class distribution.
+    
+    Args:
+        y: Target variable with class labels (training data)
+        
+    Returns:
+        Array of weights for each class, normalized to sum to n_classes
+    """
+    if isinstance(y, pd.Series):
+        y = y.to_numpy()
+        
+    # Count samples per class (skip class 0)
+    class_counts = np.bincount(y.astype(int))[1:]
+    
+    # Compute weights inversely proportional to class frequencies
+    n_samples = len(y)
+    weights = n_samples / (len(class_counts) * class_counts)
+    
+    # Normalize weights to sum to n_classes
+    weights = weights * (len(class_counts) / weights.sum())
+    
+    return weights
+
+
+def cem_score(
+    y_true: Union[pd.Series, np.ndarray],
+    y_pred: Union[pd.Series, np.ndarray],
+    class_counts: np.ndarray
+) -> float:
+    """
+    Calculate Closeness Evaluation Measure (CEM) for ordinal classification.
+    
+    Args:
+    y_true: True ordinal labels (1-based indexing)
+    y_pred: Predicted ordinal labels (1-based indexing)
+    class_counts: Array of item counts for each class in the training data
+    
+    Returns:
+    CEM score between 0 and 1 (higher is better)
+    """
+    if isinstance(y_true, pd.Series):
+        y_true = y_true.to_numpy()
+    if isinstance(y_pred, pd.Series):
+        y_pred = y_pred.to_numpy()
+    
+    n_classes = len(class_counts)
+    N = np.sum(class_counts)  # Total number of training items
+    
+    # Calculate proximity matrix
+    prox_matrix = np.zeros((n_classes, n_classes))
+    for i in range(n_classes):
+        for j in range(n_classes):
+            if i <= j:
+                prox = -np.log2((class_counts[i] / (2*N)) + np.sum(class_counts[i+1:j+1]) / N)
+            else:
+                prox = -np.log2((class_counts[j] / (2*N)) + np.sum(class_counts[j+1:i+1]) / N)
+            prox_matrix[i, j] = prox
+    
+    # Calculate numerator and denominator
+    numerator = sum(prox_matrix[true-1, pred-1] for true, pred in zip(y_true, y_pred))
+    denominator = sum(prox_matrix[true-1, true-1] for true in y_true)
+    
+    # Return CEM score
+    return numerator / denominator

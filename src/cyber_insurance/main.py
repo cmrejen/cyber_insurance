@@ -10,9 +10,7 @@ from cyber_insurance.models.model_trainer import (
     ModelTrainer,
     OrdinalLogistic,
     RandomForestOrdinal,
-    XGBoostOrdinal,
-    OrdinalModel,
-    OrdinalNeuralNet
+    OrdinalModel
 )
 from cyber_insurance.models.model_evaluator import ModelEvaluator
 from cyber_insurance.utils.constants import ColumnNames, InputPaths
@@ -45,13 +43,16 @@ def run_pipeline(
     X = processed_df.drop(columns=[target_col])
     y = processed_df[target_col]
     
-    # Step 4: Initialize models
+    # Step 4: Initialize models (optimized)
     logger.info("Initializing models...")
     models: List[OrdinalModel] = [
-        OrdinalLogistic(target_col),
-        RandomForestOrdinal(target_col),
-        XGBoostOrdinal(target_col),
-        OrdinalNeuralNet(target_col, input_dim=X.shape[1])
+        OrdinalLogistic(target_col, alpha=0.1),  
+        RandomForestOrdinal(
+            target_col,
+            n_estimators=200,      
+            min_samples_leaf=5,    
+            max_features=10        
+        ),
     ]
     
     # Step 5: Train and evaluate models
