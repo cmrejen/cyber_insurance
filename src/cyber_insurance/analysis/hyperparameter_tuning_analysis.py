@@ -156,12 +156,6 @@ class ModelTuner(ABC):
                             random_state=self.random_state
                         )
                         X_train_resampled, y_train_resampled = resampler.fit_resample(X_train, y_train)
-                        
-                        # Shift target values to start from 0 for CORAL
-                        min_label = y_train_resampled.min()
-                        if min_label > 0:
-                            y_train_resampled = y_train_resampled - min_label
-                            y_val = y_val - min_label
                     else:
                         X_train_resampled, y_train_resampled = X_train, y_train
                     
@@ -184,7 +178,7 @@ class ModelTuner(ABC):
                     # Calculate scoring metric
                     if self.metric == 'cem':
                         # Calculate class probabilities from training fold
-                        train_counts = np.bincount(y_train_resampled)
+                        train_counts = np.bincount(y_train_resampled)[1:]
                         score = cem_score(
                             y_val,
                             y_pred,
@@ -333,7 +327,6 @@ class OrdinalLogisticTuner(ModelTuner):
             **kwargs
         )
 
-# TODO: Finalize the OrdinalNeuralNetTuner model implementation
 class OrdinalNeuralNetTuner(ModelTuner):
     """Hyperparameter tuner for PyTorch Ordinal model."""
     
@@ -372,11 +365,15 @@ class OrdinalNeuralNetTuner(ModelTuner):
         
         Args:
             X: Feature matrix (preprocessed with dummy/ordinal encoding)
-            y: Target variable
+            y: Target variable (values 1-6 representing data subject ranges)
             **kwargs: Model parameters
             
         Returns:
             Initialized neural network model
+            
+        Notes:
+            Target values are automatically shifted to start from 0 in the
+            OrdinalDataset class to match CORAL's requirements.
         """
         if X is None or y is None:
             raise ValueError("X and y are required for neural network initialization")
@@ -384,20 +381,14 @@ class OrdinalNeuralNetTuner(ModelTuner):
         # All features are numerical after preprocessing
         num_numerical_features = X.shape[1]
         
-        # For CORAL layer, num_classes is the number of boundaries between classes
-        # For K classes (0 to K-1), we need K-1 boundaries
+        # Get total number of classes (K)
         unique_labels = np.sort(y.unique())
-        if not np.array_equal(unique_labels, np.arange(len(unique_labels))):
-            raise ValueError(
-                f"Target values must be consecutive integers starting from 0. "
-                f"Got {unique_labels}"
-            )
-        num_classes = len(unique_labels) - 1  # K-1 boundaries for K classes
+        num_classes = len(unique_labels)  # K classes total
         
         return self.model_class(
             target_col=self.target_col,
             num_numerical_features=num_numerical_features,
-            num_classes=num_classes,
+            num_classes=num_classes,  # Pass total number of classes (K)
             **kwargs
         )
 
@@ -801,10 +792,10 @@ if __name__ == '__main__':
     # Step 4: Initialize visualizer and tuners
     visualizer = ModelTuningVisualizer()
     tuners = [
-        CatBoostOrdinalTuner(target_col=target_col, metric='weighted_mae'),
-        RandomForestTuner(target_col=target_col, metric='weighted_mae'),
-        OrdinalLogisticTuner(target_col=target_col, metric='weighted_mae'),
-        # OrdinalNeuralNetTuner(target_col=target_col, metric='weighted_mae'),
+        OrdinalNeuralNetTuner(target_col=target_col, metric='weighted_mae'),
+        # CatBoostOrdinalTuner(target_col=target_col, metric='weighted_mae'),
+        # RandomForestTuner(target_col=target_col, metric='weighted_mae'),
+        # OrdinalLogisticTuner(target_col=target_col, metric='weighted_mae'),
     ]
     
     # Step 5: Tune models and collect results

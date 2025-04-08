@@ -207,10 +207,14 @@ class ModelParams:
     CB_L2_LEAF_REG: List[int] = [3, 6] # Best: 3
     
     # PyTorchOrdinal parameters
-    PTORDINAL_HIDDEN_LAYER_SIZES: List[Tuple[int, ...]] = [(64,), (128, 64)]
-    PTORDINAL_LR: List[float] = [0.001, 0.01]
-    PTORDINAL_BATCH_SIZE: List[int] = [32, 64]
-    PTORDINAL_EPOCHS: List[int] = [50, 100]
+    # PTORDINAL_HIDDEN_LAYER_SIZES: List[Tuple[int, ...]] = [(64,), (128, 64)]
+    # PTORDINAL_LR: List[float] = [0.001, 0.01]
+    # PTORDINAL_BATCH_SIZE: List[int] = [64, 128]
+    # PTORDINAL_EPOCHS: List[int] = [50, 100]
+    PTORDINAL_HIDDEN_LAYER_SIZES: List[Tuple[int, ...]] = [(64,)]
+    PTORDINAL_LR: List[float] = [0.001]
+    PTORDINAL_BATCH_SIZE: List[int] = [64]
+    PTORDINAL_EPOCHS: List[int] = [50]
 
 
 class InputPaths:

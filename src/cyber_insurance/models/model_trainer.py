@@ -212,20 +212,50 @@ class OrdinalLogistic(OrdinalModel):
 
 
 class OrdinalDataset(Dataset):
-    def __init__(self, X, y, cat_cols):
+    """Dataset class for ordinal data."""
+    
+    def __init__(self, X: pd.DataFrame, y: pd.Series, cat_cols: List[str]) -> None:
+        """Initialize dataset.
+        
+        Args:
+            X: Feature DataFrame
+            y: Target series
+            cat_cols: List of categorical column names
+        
+        Note:
+            For CORAL, target values are shifted to start from 0 if needed.
+            This ensures proper handling of ordinal boundaries.
+        """
         self.X = X
-        self.y = y
+        
+        # Ensure labels start from 0 for CORAL
+        min_label = y.min()
+        if min_label > 0:
+            self.y = y - min_label
+        else:
+            self.y = y
+            
         self.cat_cols = cat_cols
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Get dataset length."""
         return len(self.X)
 
-    def __getitem__(self, idx):
-        row = self.X.iloc[idx]
-        sample = {
-            'numerical': torch.tensor(row.values, dtype=torch.float)
-        }
-        return sample, torch.tensor(self.y.iloc[idx], dtype=torch.long)
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """Get item by index.
+        
+        Args:
+            idx: Index to retrieve
+            
+        Returns:
+            Dictionary with numerical features tensor and target
+        """
+        # Convert all features to float tensor
+        x_num = torch.FloatTensor(self.X.iloc[idx].values)
+        y = torch.tensor(self.y.iloc[idx], dtype=torch.long)
+        
+        return {'numerical': x_num}, y
+
 
 class CoralNN(nn.Module):
     """Neural network using official CORAL implementation for ordinal classification."""
@@ -235,8 +265,12 @@ class CoralNN(nn.Module):
         
         Args:
             num_numerical_features: Number of numerical features
-            num_classes: Number of ordinal classes
+            num_classes: Total number of classes in target variable
             dropout: Dropout rate for regularization
+            
+        Note:
+            CORAL layer uses num_classes-1 boundaries between classes.
+            For example, 6 classes (0-5) needs 5 boundaries.
         """
         super().__init__()
         
@@ -252,7 +286,7 @@ class CoralNN(nn.Module):
             nn.Dropout(dropout)
         )
         
-        # CORAL output layer
+        # CORAL output layer (expects K classes that it turns into K-1 boundaries)
         self.coral_layer = CoralLayer(size_in=64, num_classes=num_classes)
 
     def forward(self, x_num: torch.Tensor) -> torch.Tensor:
@@ -262,12 +296,12 @@ class CoralNN(nn.Module):
             x_num: Numerical features tensor
             
         Returns:
-            Logits from CORAL layer
+            Logits from CORAL layer (K-1 boundaries)
         """
         # Get backbone features
         features = self.backbone(x_num)
         
-        # Get CORAL logits
+        # Get CORAL logits (K-1 boundaries)
         logits = self.coral_layer(features)
         
         return logits
@@ -292,7 +326,7 @@ class OrdinalNeuralNet(OrdinalModel):
         Args:
             target_col: Name of target column
             num_numerical_features: Number of numerical features
-            num_classes: Number of ordinal classes
+            num_classes: Number of ordinal classes (K)
             hidden_layer_sizes: Sizes of hidden layers
             lr: Learning rate
             epochs: Number of training epochs
@@ -302,7 +336,7 @@ class OrdinalNeuralNet(OrdinalModel):
         """
         super().__init__(target_col)
         self.num_numerical_features = num_numerical_features
-        self.num_classes = num_classes
+        self.num_classes = num_classes  # Number of classes (K)
         self.hidden_layer_sizes = hidden_layer_sizes
         self.lr = lr
         self.epochs = epochs
@@ -313,11 +347,11 @@ class OrdinalNeuralNet(OrdinalModel):
         # Initialize model
         self.model = CoralNN(
             num_numerical_features=num_numerical_features,
-            num_classes=num_classes,
+            num_classes=num_classes,  # The K-1 boundaries conversion is handled internally by the CORAL layer
             dropout=dropout
         )
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
-        
+
     def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
         """Fit model to data.
         
@@ -342,12 +376,12 @@ class OrdinalNeuralNet(OrdinalModel):
                 x_num = data['numerical']
                 
                 self.optimizer.zero_grad()
-                logits = self.model(x_num)
+                logits = self.model(x_num)  # Shape: [batch_size, K-1]
                 
-                # Convert labels to levels
+                # Convert labels to levels (expects K classes and returns K-1 boundaries)
                 levels = levels_from_labelbatch(labels, num_classes=self.num_classes)
                 
-                # Compute loss
+                # Compute loss (expects K-1 boundaries)
                 loss = coral_loss(logits, levels)
                 loss.backward()
                 self.optimizer.step()
@@ -365,7 +399,7 @@ class OrdinalNeuralNet(OrdinalModel):
             X: Feature DataFrame
             
         Returns:
-            Array of predicted classes
+            Array of predicted classes (1-6 range)
         """
         self.model.eval()
         
@@ -375,23 +409,32 @@ class OrdinalNeuralNet(OrdinalModel):
         
         predictions = []
         with torch.no_grad():
-            for batch in dataloader:
-                x_num = batch['numerical']
-                logits = self.model(x_num)
+            for data, _ in dataloader:
+                x_num = data['numerical']
+                logits = self.model(x_num)  # Shape: [batch_size, K-1]
                 
-                # Get cumulative probabilities
-                cum_probs = torch.sigmoid(logits)
+                # Get cumulative probabilities P(y > k)
+                cum_probs = torch.sigmoid(logits)  # Shape: [batch_size, K-1]
                 
-                # Convert to class probabilities
-                probs = torch.zeros_like(cum_probs)
-                probs[:, 0] = cum_probs[:, 0]
-                probs[:, 1:] = cum_probs[:, 1:] - cum_probs[:, :-1]
+                # Convert to class probabilities P(y = k)
+                probs = torch.zeros((cum_probs.shape[0], self.num_classes), device=cum_probs.device)
+                
+                # First class: P(y = 0) = 1 - P(y > 0)
+                probs[:, 0] = 1 - cum_probs[:, 0]
+                
+                # Middle classes: P(y = k) = P(y > k-1) - P(y > k)
+                probs[:, 1:-1] = cum_probs[:, :-1] - cum_probs[:, 1:]
+                
+                # Last class: P(y = K-1) = P(y > K-2)
+                probs[:, -1] = cum_probs[:, -1]
                 
                 # Get predicted class
                 preds = torch.argmax(probs, dim=1)
                 predictions.append(preds)
         
-        return torch.cat(predictions).numpy()
+        # Shift predictions from 0-5 to 1-6 range
+        predictions_array = torch.cat(predictions).numpy()
+        return predictions_array + 1
     
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         """Generate class probabilities using CORAL model.
@@ -400,7 +443,7 @@ class OrdinalNeuralNet(OrdinalModel):
             X: Feature DataFrame
             
         Returns:
-            Array of class probabilities
+            Array of class probabilities [n_samples, n_classes]
         """
         self.model.eval()
         
@@ -410,12 +453,25 @@ class OrdinalNeuralNet(OrdinalModel):
         
         probabilities = []
         with torch.no_grad():
-            for batch in dataloader:
-                x_num = batch['numerical']
-                logits = self.model(x_num)
+            for data, _ in dataloader:
+                x_num = data['numerical']
+                logits = self.model(x_num)  # Shape: [batch_size, K-1]
                 
-                # Convert logits to probabilities
-                probs = torch.sigmoid(logits)
+                # Get cumulative probabilities P(y > k)
+                cum_probs = torch.sigmoid(logits)  # Shape: [batch_size, K-1]
+                
+                # Convert to class probabilities P(y = k)
+                probs = torch.zeros((cum_probs.shape[0], self.num_classes), device=cum_probs.device)
+                
+                # First class: P(y = 0) = 1 - P(y > 0)
+                probs[:, 0] = 1 - cum_probs[:, 0]
+                
+                # Middle classes: P(y = k) = P(y > k-1) - P(y > k)
+                probs[:, 1:-1] = cum_probs[:, :-1] - cum_probs[:, 1:]
+                
+                # Last class: P(y = K-1) = P(y > K-2)
+                probs[:, -1] = cum_probs[:, -1]
+                
                 probabilities.append(probs)
         
         return torch.cat(probabilities).numpy()
