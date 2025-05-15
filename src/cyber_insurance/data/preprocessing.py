@@ -11,13 +11,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sklearn.experimental import enable_iterative_imputer  # noqa: F401
 from sklearn.impute import IterativeImputer
-from imblearn.over_sampling import SMOTEN
+from imblearn.over_sampling import SMOTENC
 from imblearn.under_sampling import RandomUnderSampler
 from collections import Counter
 
 from cyber_insurance.utils.constants import (
     ColumnNames, 
-    CategoricalColumns, 
+    NumericalColumns,
+    CategoricalColumns,
     OutputPaths,
     DataType
 )
@@ -26,13 +27,12 @@ from cyber_insurance.utils.logger import setup_logger
 logger = setup_logger("ico_data_preprocessing")
 
 
-class CategoricalSMOTE(SMOTEN):
-    """SMOTE variant for categorical features.
+class CategoricalSMOTE(SMOTENC):
+    """SMOTE variant for mixed numerical and categorical features.
     
-    This class extends SMOTEN since all our features are categorical
-    (either dummy-encoded or ordinal). SMOTEN is specifically designed
-    for nominal/categorical features and uses the Value Difference Metric
-    for computing distances between categorical values.
+    This class extends SMOTENC since we have both numerical (Data Type Score)
+    and categorical features (dummy-encoded and ordinal). SMOTENC is specifically 
+    designed to handle this mix of feature types.
     
     Attributes:
         dummy_features: Set of indices for dummy-encoded features
@@ -41,8 +41,7 @@ class CategoricalSMOTE(SMOTEN):
     
     def __init__(
         self,
-        dummy_features: List[int],
-        ordinal_features: List[int],
+        categorical_features: List[int],
         sampling_strategy: str = "auto",
         random_state: Optional[int] = None,
         k_neighbors: int = 5
@@ -50,25 +49,17 @@ class CategoricalSMOTE(SMOTEN):
         """Initialize CategoricalSMOTE.
         
         Args:
-            dummy_features: Indices of dummy-encoded features
-            ordinal_features: Indices of ordinal features
+            categorical_features: Indices of categorical features
             sampling_strategy: Sampling strategy, default="auto"
             random_state: Random seed, default=None
             k_neighbors: Number of nearest neighbors, default=5
-            
-        Raises:
-            ValueError: If feature indices are invalid or overlapping
         """
-        if set(dummy_features) & set(ordinal_features):
-            raise ValueError("Dummy and ordinal feature indices must not overlap")
-            
         super().__init__(
+            categorical_features=categorical_features,
             sampling_strategy=sampling_strategy,
             random_state=random_state,
             k_neighbors=k_neighbors,
         )
-        self.dummy_features: Set[int] = set(dummy_features)
-        self.ordinal_features: Set[int] = set(ordinal_features)
 
 
 class OrdinalSMOTEResampler:
@@ -85,14 +76,13 @@ class OrdinalSMOTEResampler:
             Dictionary mapping class labels to target counts
         """
         class_counts = Counter(y)
-        majority_class = max(class_counts.items(), key=lambda x: x[1])[0]
-        majority_count = class_counts[majority_class]
-        target_minority = majority_count // 3
+        majority_count = max(class_counts.values())
+        minority_count = min(class_counts.values())
         
-        return {
-            label: max(count, target_minority)
-            for label, count in class_counts.items()
-        }
+        # Target count for minority classes (between min and max)
+        target_minority = int(np.sqrt(majority_count * minority_count))
+        
+        return {label: max(count, target_minority) for label, count in class_counts.items()}
     
     @staticmethod
     def get_undersampling_strategy(y: pd.Series, ratio: float = 0.75) -> Dict[int, int]:
@@ -172,7 +162,8 @@ class OrdinalSMOTEResampler:
         )
         X_under, y_under = undersampler.fit_resample(X, y)
         
-        # Identify dummy and ordinal features
+        # Group dummy columns by their original feature
+        dummy_groups = {}
         dummy_features = []
         ordinal_features = []
         
@@ -180,29 +171,93 @@ class OrdinalSMOTEResampler:
             is_dummy = CategoricalColumns.is_dummy_encoded(col)
             if is_dummy:
                 dummy_features.append(idx)
+                base_col = col.split('_')[0]
+                if base_col not in dummy_groups:
+                    # Get categories in order they appear in dummy columns
+                    dummy_cols = sorted([c for c in X_under.columns if c.startswith(f"{base_col}_")])
+                    
+                    # Get all valid categories
+                    valid_cats = CategoricalColumns.VALID_CATEGORIES[base_col]
+                    
+                    # The first category is the one that was dropped during dummy encoding
+                    # It should be the one from valid_cats that's not in any dummy column name
+                    dummy_cats = set(c.split('_', 1)[1] for c in dummy_cols)
+                    first_cat = next(cat for cat in valid_cats if cat not in dummy_cats)
+                    
+                    # Build categories list:
+                    # 1. Start with the dropped (first) category
+                    # 2. Add remaining categories in order they appear in dummy columns
+                    categories = [first_cat]
+                    for c in dummy_cols:
+                        cat = c.split('_', 1)[1]
+                        categories.append(cat)
+                    
+                    dummy_groups[base_col] = {
+                        'columns': [],
+                        'categories': categories
+                    }
+                dummy_groups[base_col]['columns'].append(col)
             elif col in CategoricalColumns.get_ordinal_columns():
                 ordinal_features.append(idx)
         
+        # Convert dummy-encoded back to categorical
+        X_under_decoded = X_under.copy()
+        for base_col, group_info in dummy_groups.items():
+            dummy_cols = group_info['columns']
+            categories = group_info['categories']
+            
+            # If all dummies are 0, use first category, else use argmax category
+            X_under_decoded[base_col] = pd.Categorical(
+                pd.DataFrame(X_under[dummy_cols]).apply(
+                    lambda row: categories[0] if row.sum() == 0 else categories[1:][row.argmax()],
+                    axis=1
+                ),
+                categories=categories
+            )
+            # Drop dummy columns
+            X_under_decoded = X_under_decoded.drop(columns=dummy_cols)
+        
         # Create categorical-aware SMOTE with specific strategy
+        categorical_features = [
+            idx for idx, col in enumerate(X_under_decoded.columns)
+            if col != NumericalColumns.DATA_TYPE_SCORE.value
+        ]
+        
         sampler = CategoricalSMOTE(
-            dummy_features=dummy_features,
-            ordinal_features=ordinal_features,
+            categorical_features=categorical_features,
             k_neighbors=self.k_neighbors,
             random_state=self.random_state,
             sampling_strategy=self.get_oversampling_strategy(y_under)
         )
         
         # Apply resampling
-        X_resampled, y_resampled = sampler.fit_resample(X_under, y_under)
+        X_resampled, y_resampled = sampler.fit_resample(X_under_decoded, y_under)
         
-        # Convert back to pandas
-        X_resampled = pd.DataFrame(X_resampled, columns=X.columns)
-        y_resampled = pd.Series(y_resampled, name=y.name)
+        # Verify categorical values before re-encoding
+        for col, group_info in dummy_groups.items():
+            categories = group_info['categories']
+            actual_cats = set(X_resampled[col].unique())
+            expected_cats = set(categories)
+            if not actual_cats.issubset(expected_cats):
+                raise ValueError(
+                    f"Invalid categories in {col} after resampling: {actual_cats - expected_cats}"
+                )
         
-        # Verify feature characteristics are preserved
-        self._verify_features(X, X_resampled)
+        # Convert categorical back to dummy with original categories
+        X_resampled_dummy = pd.get_dummies(X_resampled, columns=dummy_groups.keys(), drop_first=True)
         
-        return X_resampled, y_resampled
+        # Convert dummy columns to float32
+        for col in X_resampled_dummy.columns:
+            if CategoricalColumns.is_dummy_encoded(col):
+                X_resampled_dummy[col] = X_resampled_dummy[col].astype('float32')
+        
+        # Verify dummy columns match original
+        missing_cols = set(X.columns) - set(X_resampled_dummy.columns)
+        if missing_cols:
+            raise ValueError(f"Missing dummy columns after encoding: {missing_cols}")
+                
+        # Return with columns in original order
+        return X_resampled_dummy[X.columns], y_resampled
     
     def _verify_features(
         self,
@@ -309,6 +364,29 @@ class ICODataPreprocessor:
         # Step 8: Handle target class imbalance using OrdinalSMOTE
         if handle_imbalance:
             self._handle_class_imbalance()
+
+        return self._df
+
+    def minimal_preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Minimal preprocessing for initial data analysis.
+        
+        Only performs basic validation and year transformation,
+        preserving multiple records per incident for analysis.
+
+        Args:
+            df: Input DataFrame
+
+        Returns:
+            Minimally preprocessed DataFrame
+
+        Raises:
+            ValueError: If required columns are missing or invalid values found
+        """
+        self._df = df.copy()
+
+        self._validate_columns()
+        self._fix_duplicate_bi_references()
+
 
         return self._df
 
@@ -768,10 +846,20 @@ class ICODataPreprocessor:
             }
         )
 
-        # Ensure counts are integers
-        grouped[data_type_score] = grouped[data_type_score].astype(int)
+        # Standardize Data Type Score using z-score
+        score_mean = grouped[data_type_score].mean()
+        score_std = grouped[data_type_score].std()
+        grouped[data_type_score] = (grouped[data_type_score] - score_mean) / score_std
+
+        # Ensure subject type count is integer
         grouped[subject_type_count] = grouped[subject_type_count].astype(int)
 
+        logger.info(
+            f"Data Type Score standardization stats:\n"
+            f"- Mean: {score_mean:.2f}\n"
+            f"- Std: {score_std:.2f}\n"
+            f"- Range: [{grouped[data_type_score].min():.2f}, {grouped[data_type_score].max():.2f}]"
+        )
         logger.info(f"Consolidated {len(self._df) - len(grouped)} duplicate entries")
         self._df = grouped.set_index(ColumnNames.BI_REFERENCE.value)
 
@@ -780,11 +868,13 @@ class ICODataPreprocessor:
         if self._df is None:
             raise ValueError("No data loaded.")
 
-        # Check count columns are integers
-        count_cols = ["Data Type Score", "Data Subject Type Count"]
-        for col in count_cols:
-            if not pd.api.types.is_integer_dtype(self._df[col]):
-                raise ValueError(f"Column {col} is not integer type")
+        # Check Data Subject Type Count is integer
+        if not pd.api.types.is_integer_dtype(self._df["Data Subject Type Count"]):
+            raise ValueError("Column Data Subject Type Count is not integer type")
+
+        # Check Data Type Score is float
+        if not pd.api.types.is_float_dtype(self._df["Data Type Score"]):
+            raise ValueError("Column Data Type Score is not float type")
 
         # Log column types
         logger.info("\nColumn types after preprocessing:")

@@ -30,7 +30,7 @@ def analyze_multiple_records(df: pd.DataFrame) -> Dict:
     Returns:
         Dictionary containing analysis results
     """
-    incident_counts = df['BI Reference'].value_counts()
+    incident_counts = df["BI Reference"].value_counts()
 
     analysis = {
         'total_incidents': len(incident_counts),
@@ -41,12 +41,12 @@ def analyze_multiple_records(df: pd.DataFrame) -> Dict:
 
     # Analyze what differs in multiple records for same incident
     multi_record_incidents = incident_counts[incident_counts > 1].index
-    multi_records = df[df['BI Reference'].isin(multi_record_incidents)]
+    multi_records = df[df["BI Reference"].isin(multi_record_incidents)]
 
     # Check which columns vary within same incident
     varying_columns = {}
     for incident in multi_record_incidents:
-        incident_data = multi_records[multi_records['BI Reference'] == incident]
+        incident_data = multi_records[multi_records["BI Reference"] == incident]
         for col in df.columns:
             if len(incident_data[col].unique()) > 1:
                 varying_columns[col] = varying_columns.get(col, 0) + 1
@@ -62,6 +62,8 @@ def analyze_missing_values(df: pd.DataFrame) -> pd.DataFrame:
 
     Returns:
         DataFrame with missing value statistics
+
+    NOTE: Actual missing values as strings (i.e. 'Unknowns') are actually imputed in the preprocessing step.
     """
     missing = pd.DataFrame({
         'missing_count': df.isna().sum(),
@@ -114,12 +116,13 @@ def main() -> None:
 
     preprocessor = ICODataPreprocessor()
 
-    df = preprocessor.preprocess(df, impute_missing=False, encode_variables=False)
+    # Only perform minimal preprocessing to preserve raw data patterns
+    df = preprocessor.minimal_preprocess(df)
 
     # Basic dataset information
     logger.info("\nDataset Overview:")
     logger.info(f"Total records: {len(df)}")
-    logger.info(f"Unique BI References after adjustment: {df['BI Reference'].nunique()}")
+    logger.info(f"Unique BI References after adjustment: {df["BI Reference"].nunique()}")
     logger.info("\nData Types:")
     print(df.dtypes)
 

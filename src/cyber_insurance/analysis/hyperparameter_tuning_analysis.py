@@ -31,6 +31,7 @@ from cyber_insurance.utils.logger import setup_logger
 import matplotlib.pyplot as plt
 import seaborn as sns
 import itertools
+from tqdm import tqdm
 
 logger = setup_logger("hyperparameter_tuning_analysis")
 
@@ -119,7 +120,6 @@ class ModelTuner(ABC):
             Tuning results
         """
         param_grid = self.get_param_grid()
-        param_names = list(param_grid.keys())
         param_combinations = self._generate_param_combinations(param_grid)
         
         # Initialize results storage
@@ -135,84 +135,95 @@ class ModelTuner(ABC):
             ).split(X, y)
         )
         
-        # Evaluate each parameter combination
-        for params in param_combinations:
-            fold_scores = []
-            fold_confusion_matrices = []
-            
-            # Cross-validation
-            for fold_idx, (train_idx, val_idx) in enumerate(splits):
-                # Split data
-                X_train = X.iloc[train_idx].copy()
-                y_train = y.iloc[train_idx].copy()
-                X_val = X.iloc[val_idx].copy()
-                y_val = y.iloc[val_idx].copy()
+        # Create progress bar
+        total_iterations = len(param_combinations) * self.cv_folds
+        pbar = tqdm(total=total_iterations, desc=f"Tuning {self.model_class.__name__}")
+        
+        try:
+            for params in param_combinations:
+                fold_scores = []
+                fold_confusion_matrices = []
                 
-                try:
-                    # Apply resampling with custom strategy
-                    if self.model_class in [OrdinalNeuralNet, RandomForestOrdinal, OrdinalLogistic]:
-                        resampler = OrdinalSMOTEResampler(
-                            k_neighbors=5,
-                            random_state=self.random_state
-                        )
-                        X_train_resampled, y_train_resampled = resampler.fit_resample(X_train, y_train)
-                    else:
-                        X_train_resampled, y_train_resampled = X_train, y_train
-                    
-                    # Train and evaluate model
-                    if isinstance(self, OrdinalNeuralNetTuner):
-                        model = self.create_model(X=X_train_resampled, y=y_train_resampled, **params)
-                    else:
-                        model = self.create_model(**params)
+                # Cross-validation
+                for fold_idx, (train_idx, val_idx) in enumerate(splits):
+                    try:
+                        # Split data
+                        X_train = X.iloc[train_idx].copy()
+                        y_train = y.iloc[train_idx].copy()
+                        X_val = X.iloc[val_idx].copy()
+                        y_val = y.iloc[val_idx].copy()
                         
-                    logger.info(
-                        f"Fitting {self.model_class.__name__} with "
-                        f"parameters: {params} "
-                        f"for fold {fold_idx + 1}/{self.cv_folds}"
-                    )
-                    model.fit(X_train_resampled, y_train_resampled)
-                    
-                    # Evaluate on original validation data
-                    y_pred = model.predict(X_val)
-                    
-                    # Calculate scoring metric
-                    if self.metric == 'cem':
-                        # Calculate class probabilities from training fold
-                        train_counts = np.bincount(y_train_resampled)[1:]
-                        score = cem_score(
-                            y_val,
-                            y_pred,
-                            class_counts=train_counts
+                        # Apply resampling with custom strategy
+                        if self.model_class in [OrdinalNeuralNet, RandomForestOrdinal, OrdinalLogistic]:
+                            resampler = OrdinalSMOTEResampler(
+                                k_neighbors=5,
+                                random_state=self.random_state
+                            )
+                            X_train_resampled, y_train_resampled = resampler.fit_resample(X_train, y_train)
+                        else:
+                            X_train_resampled, y_train_resampled = X_train, y_train
+                        
+                        # Train and evaluate model
+                        if isinstance(self, OrdinalNeuralNetTuner):
+                            model = self.create_model(X=X_train_resampled, y=y_train_resampled, **params)
+                        else:
+                            model = self.create_model(**params)
+                            
+                        logger.info(
+                            f"Fitting {self.model_class.__name__} with "
+                            f"parameters: {params} "
+                            f"(Iteration {pbar.n+1}/{total_iterations}, "
+                            f"Fold {fold_idx + 1}/{self.cv_folds})"
                         )
-                    elif self.metric == 'weighted_mae':
-                        # Compute weights from training fold
-                        class_weights = compute_class_weights(y_train)
-                        score = weighted_mae_score(y_val, y_pred, class_weights)
-                    else:
-                        raise ValueError(f"Unknown metric: {self.metric}. Use 'cem' or 'weighted_mae'")
+                        model.fit(X_train_resampled, y_train_resampled)
+                        
+                        # Evaluate on original validation data
+                        y_pred = model.predict(X_val)
+                        
+                        # Calculate scoring metric
+                        if self.metric == 'cem':
+                            # Calculate class probabilities from training fold
+                            train_counts = np.bincount(y_train_resampled)[1:]
+                            score = cem_score(
+                                y_val,
+                                y_pred,
+                                class_counts=train_counts
+                            )
+                        elif self.metric == 'weighted_mae':
+                            # Compute weights from training fold
+                            class_weights = compute_class_weights(y_train)
+                            score = weighted_mae_score(y_val, y_pred, class_weights)
+                        else:
+                            raise ValueError(f"Unknown metric: {self.metric}. Use 'cem' or 'weighted_mae'")
+                        
+                        logger.info(
+                            f"======================= {self.metric.upper()} score: {score:.3f} ======================="
+                        )
+                        fold_scores.append(score)
+                        
+                        # Calculate confusion matrix
+                        cm = confusion_matrix(y_val, y_pred)
+                        fold_confusion_matrices.append(cm)
+                        
+                        # Update progress bar
+                        pbar.update(1)
                     
-                    logger.info(
-                        f"======================= {self.metric.upper()} score: {score:.3f} ======================="
-                    )
-                    fold_scores.append(score)
-                    
-                    # Calculate confusion matrix
-                    cm = confusion_matrix(y_val, y_pred)
-                    fold_confusion_matrices.append(cm)
-                    
-                except Exception as e:
-                    logger.error(f"Error in CV fold: {e}")
-                    fold_scores.append(float('-inf'))  # Minimize for bad params
-                    fold_confusion_matrices.append(np.zeros((len(np.unique(y)), len(np.unique(y)))))
-            
-            # Record results
-            result = {
-                **params,
-                f'{self.metric}_score': np.mean(fold_scores),
-                f'{self.metric}_std': np.std(fold_scores)
-            }
-            results.append(result)
-            confusion_matrices_list.append(fold_confusion_matrices)
+                    except Exception as e:
+                        logger.error(f"Error in CV fold: {e}")
+                        fold_scores.append(float('-inf'))  # Minimize for bad params
+                        fold_confusion_matrices.append(np.zeros((len(np.unique(y)), len(np.unique(y)))))
+                
+                # Record results
+                result = {
+                    **params,
+                    f'{self.metric}_score': np.mean(fold_scores),
+                    f'{self.metric}_std': np.std(fold_scores)
+                }
+                results.append(result)
+                confusion_matrices_list.append(fold_confusion_matrices)
+        
+        finally:
+            pbar.close()
         
         # Convert to DataFrame
         results_df = pd.DataFrame(results)
@@ -224,7 +235,7 @@ class ModelTuner(ABC):
             best_idx = results_df[f'{self.metric}_score'].argmin()
         best_params = {
             param: results_df.loc[best_idx, param]
-            for param in param_names
+            for param in param_grid.keys()
         }
         
         # Log results
@@ -792,10 +803,10 @@ if __name__ == '__main__':
     # Step 4: Initialize visualizer and tuners
     visualizer = ModelTuningVisualizer()
     tuners = [
-        OrdinalNeuralNetTuner(target_col=target_col, metric='weighted_mae'),
-        # CatBoostOrdinalTuner(target_col=target_col, metric='weighted_mae'),
-        # RandomForestTuner(target_col=target_col, metric='weighted_mae'),
         # OrdinalLogisticTuner(target_col=target_col, metric='weighted_mae'),
+        # RandomForestTuner(target_col=target_col, metric='weighted_mae'),
+        # CatBoostOrdinalTuner(target_col=target_col, metric='weighted_mae'),
+        OrdinalNeuralNetTuner(target_col=target_col, metric='weighted_mae'),
     ]
     
     # Step 5: Tune models and collect results

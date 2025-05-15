@@ -152,7 +152,6 @@ class CategoricalColumns:
     
     # Additional ordinal columns (after encoding or transformation)
     ADDITIONAL_ORDINAL_COLUMNS: List[str] = [
-        'Data Type Score',
         'Data Subject Type Count',
         'Years Since Start'
     ]
@@ -188,6 +187,9 @@ class CategoricalColumns:
         excluded = cls._EXCLUDED.get(column_name, set())
         return [cat for cat in categories if cat not in excluded]
 
+class NumericalColumns(str, Enum):
+    DATA_TYPE_SCORE = 'Data Type Score'
+
 
 class ModelParams:
     """Hyperparameters for machine learning models."""
@@ -207,14 +209,10 @@ class ModelParams:
     CB_L2_LEAF_REG: List[int] = [3, 6] # Best: 3
     
     # PyTorchOrdinal parameters
-    # PTORDINAL_HIDDEN_LAYER_SIZES: List[Tuple[int, ...]] = [(64,), (128, 64)]
-    # PTORDINAL_LR: List[float] = [0.001, 0.01]
-    # PTORDINAL_BATCH_SIZE: List[int] = [64, 128]
-    # PTORDINAL_EPOCHS: List[int] = [50, 100]
-    PTORDINAL_HIDDEN_LAYER_SIZES: List[Tuple[int, ...]] = [(64,)]
-    PTORDINAL_LR: List[float] = [0.001]
-    PTORDINAL_BATCH_SIZE: List[int] = [64]
-    PTORDINAL_EPOCHS: List[int] = [50]
+    PTORDINAL_HIDDEN_LAYER_SIZES: List[Tuple[int, ...]] = [(64,), (128, 64)]
+    PTORDINAL_LR: List[float] = [0.001, 0.01]
+    PTORDINAL_BATCH_SIZE: List[int] = [64, 128]
+    PTORDINAL_EPOCHS: List[int] = [50, 100]
 
 
 class InputPaths:

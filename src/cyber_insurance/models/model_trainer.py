@@ -16,15 +16,19 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
+from torch.nn.functional import binary_cross_entropy_with_logits as bce_loss
 from coral_pytorch.dataset import levels_from_labelbatch
-from coral_pytorch.losses import coral_loss
+from coral_pytorch.losses import CornLoss, coral_loss
 from coral_pytorch.layers import CoralLayer
-
+from coral_pytorch.dataset import corn_label_from_logits
 
 from cyber_insurance.utils.logger import setup_logger
 
-logger = setup_logger("model_trainer")
+# Configure logger
+logger = setup_logger(__name__)
 
+# Set device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 @dataclass
 class ModelResults:
@@ -257,60 +261,62 @@ class OrdinalDataset(Dataset):
         return {'numerical': x_num}, y
 
 
-class CoralNN(nn.Module):
-    """Neural network using official CORAL implementation for ordinal classification."""
+class CornNN(nn.Module):
+    """Neural Network with CORN (Conditional Ordinal Neural Network) architecture."""
     
-    def __init__(self, num_numerical_features: int, num_classes: int, dropout: float = 0.1) -> None:
-        """Initialize CORAL network.
+    def __init__(
+        self,
+        num_numerical_features: int,
+        num_classes: int,
+        hidden_sizes: tuple = (128, 64),
+        dropout: float = 0.1
+    ) -> None:
+        """Initialize network.
         
         Args:
             num_numerical_features: Number of numerical features
-            num_classes: Total number of classes in target variable
-            dropout: Dropout rate for regularization
-            
-        Note:
-            CORAL layer uses num_classes-1 boundaries between classes.
-            For example, 6 classes (0-5) needs 5 boundaries.
+            num_classes: Number of classes (K)
+            hidden_sizes: Sizes of hidden layers
+            dropout: Dropout rate
         """
         super().__init__()
         
-        # Backbone network
-        self.backbone = nn.Sequential(
-            nn.Linear(num_numerical_features, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.Dropout(dropout)
-        )
+        layers = []
+        prev_size = num_numerical_features
         
-        # CORAL output layer (expects K classes that it turns into K-1 boundaries)
-        self.coral_layer = CoralLayer(size_in=64, num_classes=num_classes)
-
-    def forward(self, x_num: torch.Tensor) -> torch.Tensor:
-        """Forward pass implementing CORAL logic.
+        # Hidden layers
+        for size in hidden_sizes:
+            layers.extend([
+                nn.Linear(prev_size, size),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            ])
+            prev_size = size
+        
+        # Shared feature extractor
+        self.shared = nn.Sequential(*layers)
+        
+        # Single output layer for K-1 binary classifiers
+        self.output_layer = nn.Linear(prev_size, num_classes - 1)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
         
         Args:
-            x_num: Numerical features tensor
+            x: Input tensor [batch_size, num_features]
             
         Returns:
-            Logits from CORAL layer (K-1 boundaries)
+            Logits tensor [batch_size, K-1]
         """
-        # Get backbone features
-        features = self.backbone(x_num)
-        
-        # Get CORAL logits (K-1 boundaries)
-        logits = self.coral_layer(features)
-        
-        return logits
+        features = self.shared(x)
+        return self.output_layer(features)
+
 
 class OrdinalNeuralNet(OrdinalModel):
-    """Neural Network for ordinal classification using CORAL."""
+    """Neural Network for ordinal classification using CORN."""
     
     def __init__(
-        self, 
+        self,
         target_col: str,
         num_numerical_features: int,
         num_classes: int,
@@ -326,9 +332,9 @@ class OrdinalNeuralNet(OrdinalModel):
         Args:
             target_col: Name of target column
             num_numerical_features: Number of numerical features
-            num_classes: Number of ordinal classes (K)
+            num_classes: Total number of classes (K)
             hidden_layer_sizes: Sizes of hidden layers
-            lr: Learning rate
+            lr: Initial learning rate
             epochs: Number of training epochs
             batch_size: Training batch size
             random_state: Random seed
@@ -336,7 +342,7 @@ class OrdinalNeuralNet(OrdinalModel):
         """
         super().__init__(target_col)
         self.num_numerical_features = num_numerical_features
-        self.num_classes = num_classes  # Number of classes (K)
+        self.num_classes = num_classes
         self.hidden_layer_sizes = hidden_layer_sizes
         self.lr = lr
         self.epochs = epochs
@@ -345,12 +351,26 @@ class OrdinalNeuralNet(OrdinalModel):
         self.dropout = dropout
         
         # Initialize model
-        self.model = CoralNN(
+        self.model = CornNN(
             num_numerical_features=num_numerical_features,
-            num_classes=num_classes,  # The K-1 boundaries conversion is handled internally by the CORAL layer
+            num_classes=num_classes,
+            hidden_sizes=hidden_layer_sizes,
             dropout=dropout
         )
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        
+        # Initialize CORN loss function
+        self.criterion = CornLoss(num_classes=num_classes)
+        
+        # Add learning rate scheduler with optimized parameters
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode='min',
+            factor=0.2,
+            patience=3,
+            verbose=True,
+            min_lr=1e-6
+        )
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
         """Fit model to data.
@@ -362,7 +382,7 @@ class OrdinalNeuralNet(OrdinalModel):
         torch.manual_seed(self.random_state)
         self.model.train()
         
-        # Create dataset and dataloader
+        # Create dataset and dataloader, y is expected to be on a 0-based scale
         dataset = OrdinalDataset(X, y, [])
         dataloader = DataLoader(
             dataset, 
@@ -371,108 +391,81 @@ class OrdinalNeuralNet(OrdinalModel):
         )
         
         # Training loop
+        epoch_losses = []
         for epoch in range(self.epochs):
+            batch_losses = []
             for i, (data, labels) in enumerate(dataloader):
-                x_num = data['numerical']
+                x_num = data['numerical'].to(device)
+                labels = labels.to(device)
                 
                 self.optimizer.zero_grad()
-                logits = self.model(x_num)  # Shape: [batch_size, K-1]
+                logits = self.model(x_num)
                 
-                # Convert labels to levels (expects K classes and returns K-1 boundaries)
-                levels = levels_from_labelbatch(labels, num_classes=self.num_classes)
-                
-                # Compute loss (expects K-1 boundaries)
-                loss = coral_loss(logits, levels)
+                # Use CORN loss
+                loss = self.criterion(logits, labels)
                 loss.backward()
                 self.optimizer.step()
+                
+                batch_losses.append(loss.item())
                 
                 if (i+1) % 10 == 0:
                     logger.info(
                         f'Epoch {epoch+1}/{self.epochs}, '
                         f'Step {i+1}, Loss: {loss.item():.4f}'
                     )
+            
+            # Average loss for this epoch
+            epoch_loss = np.mean(batch_losses)
+            epoch_losses.append(epoch_loss)
+            
+            # Update learning rate scheduler with epoch loss
+            self.scheduler.step(epoch_loss)
     
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Generate predictions using CORAL model.
+        """Generate predictions using CORN model.
         
         Args:
             X: Feature DataFrame
             
         Returns:
-            Array of predicted classes (1-6 range)
+            Array of predicted class labels
         """
         self.model.eval()
-        
-        # Create dataset and dataloader
         dataset = OrdinalDataset(X, pd.Series(np.zeros(len(X))), [])
         dataloader = DataLoader(dataset, batch_size=self.batch_size)
         
         predictions = []
         with torch.no_grad():
             for data, _ in dataloader:
-                x_num = data['numerical']
-                logits = self.model(x_num)  # Shape: [batch_size, K-1]
-                
-                # Get cumulative probabilities P(y > k)
-                cum_probs = torch.sigmoid(logits)  # Shape: [batch_size, K-1]
-                
-                # Convert to class probabilities P(y = k)
-                probs = torch.zeros((cum_probs.shape[0], self.num_classes), device=cum_probs.device)
-                
-                # First class: P(y = 0) = 1 - P(y > 0)
-                probs[:, 0] = 1 - cum_probs[:, 0]
-                
-                # Middle classes: P(y = k) = P(y > k-1) - P(y > k)
-                probs[:, 1:-1] = cum_probs[:, :-1] - cum_probs[:, 1:]
-                
-                # Last class: P(y = K-1) = P(y > K-2)
-                probs[:, -1] = cum_probs[:, -1]
-                
-                # Get predicted class
-                preds = torch.argmax(probs, dim=1)
-                predictions.append(preds)
+                x_num = data['numerical'].to(device)
+                logits = self.model(x_num)
+                pred = corn_label_from_logits(logits)
+                predictions.append(pred.cpu())
         
-        # Shift predictions from 0-5 to 1-6 range
-        predictions_array = torch.cat(predictions).numpy()
-        return predictions_array + 1
+        return torch.cat(predictions).numpy()
     
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        """Generate class probabilities using CORAL model.
+        """Generate class probabilities using CORN model.
         
         Args:
             X: Feature DataFrame
             
         Returns:
-            Array of class probabilities [n_samples, n_classes]
+            Array of class probabilities [batch_size, K-1]
         """
         self.model.eval()
-        
-        # Create dataset and dataloader
         dataset = OrdinalDataset(X, pd.Series(np.zeros(len(X))), [])
         dataloader = DataLoader(dataset, batch_size=self.batch_size)
         
         probabilities = []
         with torch.no_grad():
             for data, _ in dataloader:
-                x_num = data['numerical']
-                logits = self.model(x_num)  # Shape: [batch_size, K-1]
-                
-                # Get cumulative probabilities P(y > k)
-                cum_probs = torch.sigmoid(logits)  # Shape: [batch_size, K-1]
-                
-                # Convert to class probabilities P(y = k)
-                probs = torch.zeros((cum_probs.shape[0], self.num_classes), device=cum_probs.device)
-                
-                # First class: P(y = 0) = 1 - P(y > 0)
-                probs[:, 0] = 1 - cum_probs[:, 0]
-                
-                # Middle classes: P(y = k) = P(y > k-1) - P(y > k)
-                probs[:, 1:-1] = cum_probs[:, :-1] - cum_probs[:, 1:]
-                
-                # Last class: P(y = K-1) = P(y > K-2)
-                probs[:, -1] = cum_probs[:, -1]
-                
-                probabilities.append(probs)
+                x_num = data['numerical'].to(device)
+                logits = self.model(x_num)
+                # Convert logits to probabilities and compute cumulative product
+                probas = torch.sigmoid(logits)
+                probas = torch.cumprod(probas, dim=1)
+                probabilities.append(probas.cpu())
         
         return torch.cat(probabilities).numpy()
 
@@ -480,7 +473,8 @@ class OrdinalNeuralNet(OrdinalModel):
         """Get feature importance scores using gradient-based attribution.
         
         Returns:
-            Dictionary mapping feature names to importance scores
+            Dictionary mapping feature names to importance scores, or None if
+            feature names are not available
         """
         if not hasattr(self, 'feature_names'):
             return None
@@ -489,7 +483,7 @@ class OrdinalNeuralNet(OrdinalModel):
         importances = {}
         
         # Create a small batch of random data
-        X_sample = torch.randn(100, self.num_numerical_features)
+        X_sample = torch.randn(100, self.num_numerical_features, device=device)
         X_sample.requires_grad_(True)
         
         # Get predictions

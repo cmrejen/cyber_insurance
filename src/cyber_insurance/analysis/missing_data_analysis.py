@@ -114,7 +114,7 @@ class MissingDataAnalyzer:
             if use_encoded:
                 self._analyze_encoded_patterns(col, indicator, save_path)
             else:
-                # Analyze patterns across original categories
+                # Analyze patterns across original categories (i.e. before any transformation and excl. quarter)
                 categorical_cols = [
                     c
                     for c in self._df.select_dtypes(include=["category"]).columns
@@ -155,16 +155,15 @@ class MissingDataAnalyzer:
         if self._df_encoded is None:
             raise ValueError("No encoded data available")
 
-        # Get numeric columns (including dummies), excluding target column
+        # Get numeric columns (numerical/ordinal variables excl. Time Taken to Report), excluding target column
         numeric_cols = self._df_encoded.select_dtypes(
-            include=["int64", "float64"]
+            include=["int64", "float64", "int32", "float32"]
         ).columns.drop(
             [
                 col
                 for col in self._df_encoded.columns
-                if col.startswith(target_col)
+                if col == ColumnNames.NO_DATA_SUBJECTS_AFFECTED.value
                 or col == indicator.name
-                or col == ColumnNames.NO_DATA_SUBJECTS_AFFECTED.value
             ]
         )
 
