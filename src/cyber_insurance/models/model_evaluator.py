@@ -1,5 +1,5 @@
 """Model evaluation and comparison utilities for cyber insurance models."""
-from typing import List, Union
+from typing import List, Union, Optional, Dict, Any, Set, Tuple
 from sklearn.base import BaseEstimator
 from typing import Callable
 
@@ -7,11 +7,33 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from pathlib import Path
 
-from cyber_insurance.models.model_trainer import ModelResults
 from cyber_insurance.utils.constants import OutputPaths
+from cyber_insurance.utils.logger import setup_logger
 
-from imblearn.metrics import macro_averaged_mean_absolute_error
+from dataclasses import dataclass, field
+
+# Configure logger
+logger = setup_logger(__name__)
+
+@dataclass
+class FoldData:
+    """Container for fold-specific data and SHAP values."""
+    y_test: pd.Series
+    y_pred_test: np.ndarray
+    fold_model: Optional[BaseEstimator] = None
+
+@dataclass
+class ModelResults:
+    """Container for model evaluation results."""
+    model_name: str
+    predictions: np.ndarray
+    cv_scores: dict[str, np.ndarray]
+    feature_importance: Optional[dict[str, float]] = None
+    model: Optional[BaseEstimator] = None
+    fold_data: List[FoldData] = field(default_factory=list)
+
 class ModelEvaluator:
     """Evaluates and compares model performance."""
     
@@ -78,12 +100,29 @@ class ModelEvaluator:
     
     def plot_feature_importance(self) -> None:
         """Plot feature importance comparison across models."""
-        models_with_importance = [
-            r for r in self.results
-            if r.feature_importance is not None
-        ]
+        models_with_importance = []
+        
+        # Filter models with valid feature importance
+        for result in self.results:
+            if result.feature_importance is not None:
+                # Verify that feature importance contains valid numeric data
+                try:
+                    importance = pd.Series(result.feature_importance)
+                    # Check if the data is numeric and not empty
+                    if not importance.empty and pd.api.types.is_numeric_dtype(importance):
+                        models_with_importance.append(result)
+                    else:
+                        logger.warning(
+                            f"Skipping feature importance plot for {result.model_name}: "
+                            f"Non-numeric or empty feature importance data"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Skipping feature importance plot for {result.model_name}: {str(e)}"
+                    )
         
         if not models_with_importance:
+            logger.info("No models with valid feature importance data available for plotting")
             return
         
         n_models = len(models_with_importance)
@@ -114,6 +153,108 @@ class ModelEvaluator:
         )
         plt.close()
     
+    def plot_metrics_bar(self) -> None:
+        """Plot bar charts of key metrics (Accuracy, F1, Cohen's Kappa, MAE) for all models.
+        
+        This method creates a bar chart comparing all models across four key metrics:
+        - Accuracy
+        - Weighted F1 Score
+        - Cohen's Quadratic Kappa
+        - Mean Absolute Error (MAE)
+        
+        All metrics are calculated using aggregated results from all CV folds.
+        """
+        # Create output directory if needed
+        OutputPaths.create_directories()
+        output_dir = OutputPaths.MODEL_EVALUATION_DIR
+        
+        # Define metrics to plot
+        metrics = ['accuracy', 'f1_weighted', 'weighted_mae', 'cem']
+        metric_labels = ['Accuracy', 'Weighted F1', 'Weighted MAE', 'CEM']
+        
+        # Set up the figure with 2x2 subplots
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        axes = axes.flatten()
+        
+        # Colors for different models
+        colors = plt.cm.tab10(np.linspace(0, 1, len(self.results)))
+        
+        # For each metric, create a bar plot
+        for i, (metric, label) in enumerate(zip(metrics, metric_labels)):
+            ax = axes[i]
+            
+            # Extract mean scores for each model
+            model_names = []
+            mean_scores = []
+            std_scores = []
+            
+            for result in self.results:
+                model_names.append(result.model_name)
+                scores = result.cv_scores.get(f'test_{metric}', np.array([0]))
+                mean_scores.append(np.mean(scores))
+                std_scores.append(np.std(scores))
+            
+            # Create bar plot
+            bars = ax.bar(
+                model_names, 
+                mean_scores, 
+                yerr=std_scores,
+                color=colors,
+                alpha=0.7,
+                capsize=5
+            )
+            
+            # Add value labels on top of bars
+            for bar, score in zip(bars, mean_scores):
+                height = bar.get_height()
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2.,
+                    height + 0.02,
+                    f'{score:.3f}',
+                    ha='center', 
+                    va='bottom',
+                    fontsize=9
+                )
+            
+            # Set title and labels
+            ax.set_title(f'{label}', fontsize=12)
+            ax.set_ylabel('Score')
+            ax.set_ylim(0, max(mean_scores) * 1.2)  # Add some space for labels
+            
+            # Rotate x-axis labels for better readability
+            ax.set_xticklabels(model_names, rotation=45, ha='right')
+            
+            # Add grid for better readability
+            ax.grid(True, linestyle='--', alpha=0.7)
+            
+            # For MAE, add note that lower is better
+            if metric == 'weighted_mae':
+                ax.text(
+                    0.5, 0.95, 
+                    '(Lower is better)', 
+                    transform=ax.transAxes,
+                    ha='center',
+                    fontsize=10,
+                    style='italic'
+                )
+        
+        # Add overall title
+        fig.suptitle('Model Performance Metrics (Aggregated across CV folds)', fontsize=16)
+        
+        # Adjust layout
+        plt.tight_layout()
+        fig.subplots_adjust(top=0.9)
+        
+        # Save figure
+        plt.savefig(
+            output_dir / 'model_metrics_comparison.png',
+            bbox_inches='tight',
+            dpi=300
+        )
+        plt.close()
+        
+        logger.info("Generated bar plots for key metrics")
+    
     def get_best_model(self, metric: str) -> str:
         """Get name of best performing model for a metric.
         
@@ -127,25 +268,176 @@ class ModelEvaluator:
             r.model_name: np.mean(r.cv_scores[f'test_{metric}'])
             for r in self.results
         }
-        return max(mean_scores.items(), key=lambda x: x[1])[0]
+        if metric == "cem":
+            return max(mean_scores.items(), key=lambda x: x[1])[0]
+        else:
+            return min(mean_scores.items(), key=lambda x: x[1])[0]
+
+    
+    def plot_error_distribution(self) -> None:
+        """Plot the distribution of absolute errors (|predicted - true|) for each model.
+        
+        This method creates histograms showing the distribution of absolute errors
+        aggregated across all cross-validation folds. For ordinal classification,
+        this shows how far off the predictions are from the true classes.
+        """
+        # Create output directory if needed
+        OutputPaths.create_directories()
+        output_dir = OutputPaths.MODEL_EVALUATION_DIR
+        
+        # Get all unique models
+        model_names = [result.model_name for result in self.results]
+        
+        # Set up the figure - one row per model
+        fig, axes = plt.subplots(
+            len(model_names), 1, 
+            figsize=(10, 4 * len(model_names)),
+            sharex=True
+        )
+        
+        # Handle case with only one model
+        if len(model_names) == 1:
+            axes = [axes]
+            
+        # For each model, create an error distribution plot
+        for _, (result, ax) in enumerate(zip(self.results, axes)):
+            # Collect true values and predictions across all folds
+            y_true = []
+            y_pred = []
+            
+            for fold_data in result.fold_data:
+                if hasattr(fold_data, 'y_test') and fold_data.y_test is not None:
+                    # Get true values
+                    fold_y_true = fold_data.y_test.values
+                    
+                    # Get predictions directly from fold_data
+                    fold_y_pred = fold_data.y_pred_test
+                    
+                    # Add to overall lists
+                    y_true.extend(fold_y_true)
+                    y_pred.extend(fold_y_pred)
+            
+            # Calculate absolute errors
+            abs_errors = np.abs(np.array(y_pred) - np.array(y_true))
+            
+            # Count occurrences of each error value
+            error_counts = {}
+            for error in abs_errors:
+                error_counts[error] = error_counts.get(error, 0) + 1
+            
+            # Convert to percentages
+            total_samples = len(abs_errors)
+            error_percentages = {k: (v / total_samples) * 100 for k, v in error_counts.items()}
+            
+            # Sort by error value
+            sorted_errors = sorted(error_percentages.items())
+            error_values = [e[0] for e in sorted_errors]
+            error_percentages = [e[1] for e in sorted_errors]
+            
+            # Create bar chart
+            bars = ax.bar(
+                error_values,
+                error_percentages,
+                color='skyblue',
+                alpha=0.7,
+                width=0.8,
+                edgecolor='black',
+                linewidth=0.5
+            )
+            
+            # Find the maximum percentage for y-axis limit adjustment
+            max_percentage = max(error_percentages) if error_percentages else 0
+            
+            # Add value labels on top of bars
+            for bar, percentage in zip(bars, error_percentages):
+                height = bar.get_height()
+                # Only add labels for bars with significant height
+                if height > 0.5:  # Skip very small bars
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2.,
+                        height * 1.1,  # Position outside the top of the bar
+                        f'{percentage:.1f}%',
+                        ha='center', 
+                        va='top',
+                        fontsize=8,
+                        color='black',
+                        bbox=dict(boxstyle="round,pad=0.1", fc="white", ec="none", alpha=0.7)
+                    )
+            
+            # Set y-axis limit with enough room for the plot
+            ax.set_ylim(0, max_percentage * 1.15)
+            
+            # Calculate mean absolute error for display
+            mae = np.mean(abs_errors)
+            
+            # Set title and labels
+            ax.set_title(f'{result.model_name}: Error Distribution (MAE = {mae:.3f})', fontsize=10)
+            ax.set_xlabel('Absolute Error (|Predicted - True|)')
+            ax.set_ylabel('Percentage of Samples (%)')
+            
+            # Set x-ticks to integers
+            max_error = int(max(error_values)) if error_values else 0
+            ax.set_xticks(range(max_error + 1))
+            ax.set_xticklabels(range(max_error + 1))
+            
+            # Add text with error statistics
+            stats_text = (
+                f"Mean Abs Error: {mae:.3f}\n"
+                f"Median Abs Error: {np.median(abs_errors):.3f}\n"
+                f"Perfect Predictions: {error_counts.get(0, 0) / total_samples * 100:.1f}%\n"
+                f"Within ±1 Class: {sum(error_counts.get(e, 0) for e in [0, 1]) / total_samples * 100:.1f}%"
+            )
+            ax.text(
+                0.95, 0.95,
+                stats_text,
+                transform=ax.transAxes,
+                ha='right',
+                va='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
+                fontsize=10
+            )
+        
+        # Add overall title
+        fig.suptitle('Error Distribution (|Predicted - True|) Across All CV Folds', fontsize=10)
+        
+        # Adjust layout
+        plt.tight_layout()
+        fig.subplots_adjust(top=0.90, hspace=0.3)  # Increased spacing between subplots
+        
+        # Save figure
+        plt.savefig(
+            output_dir / 'error_distribution.png',
+            bbox_inches='tight',
+            dpi=300
+        )
+        plt.close()
+        
+        logger.info("Generated error distribution plots")
     
     def print_summary(self) -> None:
         """Print summary of model performance."""
         print("\nModel Evaluation Summary:")
         print("-" * 50)
         
-        metrics = ['mae', 'accuracy', 'f1_weighted', 'weighted_mae']
+        # All metrics to evaluate
+        all_metrics = ['mae', 'accuracy', 'f1_weighted', 'weighted_mae', 'cem']
         
-        for metric in metrics:
-            print(f"\n{metric.upper()} Scores:")
-            for result in self.results:
-                train_scores = result.cv_scores[f'train_{metric}']
-                test_scores = result.cv_scores[f'test_{metric}']
-                print(
-                    f"{result.model_name:20} "
-                    f"Train: {np.mean(train_scores):.3f} ± {np.std(train_scores):.3f}  "
-                    f"Test: {np.mean(test_scores):.3f} ± {np.std(test_scores):.3f}"
-                )
+        # Print metrics in a single loop
+        for metric in all_metrics:
+            # Check if at least one model has this metric
+            if any(f'test_{metric}' in result.cv_scores for result in self.results):
+                print(f"\n{metric.upper()} Scores:")
+                for result in self.results:
+                    if f'train_{metric}' in result.cv_scores and f'test_{metric}' in result.cv_scores:
+                        train_scores = result.cv_scores[f'train_{metric}']
+                        test_scores = result.cv_scores[f'test_{metric}']
+                        print(
+                            f"{result.model_name:20} "
+                            f"Train: {np.mean(train_scores):.3f} ± {np.std(train_scores):.3f}  "
+                            f"Test: {np.mean(test_scores):.3f} ± {np.std(test_scores):.3f}"
+                        )
+                    else:
+                        print(f"{result.model_name:20} Not evaluated with {metric}")
 
 
 def weighted_mae_score(

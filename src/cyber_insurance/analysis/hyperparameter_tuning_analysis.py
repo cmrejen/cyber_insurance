@@ -183,7 +183,7 @@ class ModelTuner(ABC):
                         # Calculate scoring metric
                         if self.metric == 'cem':
                             # Calculate class probabilities from training fold
-                            train_counts = np.bincount(y_train_resampled)[1:]
+                            train_counts = np.bincount(y_train)[1:]
                             score = cem_score(
                                 y_val,
                                 y_pred,
@@ -552,9 +552,14 @@ class ModelTuningVisualizer:
             axes[idx].set_xlabel('max_features')
             axes[idx].set_ylabel('min_samples_leaf')
         
+        if result.metric == 'cem':
+            best_metric_text = f'Best {result.metric.upper()} score: {result.results_df[f"{result.metric}_score"].max():.3f}'
+        else:
+            best_metric_text = f'Best {result.metric.upper()} score: {result.results_df[f"{result.metric}_score"].min():.3f}'
+        
         plt.suptitle(
             f'{result.model_name} Hyperparameter Tuning Results\n'
-            f'Best {result.metric.upper()} score: {result.results_df[f"{result.metric}_score"].max():.3f}'
+            f'{best_metric_text}'
         )
         plt.tight_layout()
         
@@ -669,9 +674,14 @@ class ModelTuningVisualizer:
             axes[idx].set_xlabel('Learning Rate')
             axes[idx].set_ylabel('L2 Regularization')
         
+        if result.metric == 'cem':
+            best_metric_text = f'Best {result.metric.upper()} score: {result.results_df[f"{result.metric}_score"].max():.3f}'
+        else:
+            best_metric_text = f'Best {result.metric.upper()} score: {result.results_df[f"{result.metric}_score"].min():.3f}'
+        
         plt.suptitle(
             f'{result.model_name} Hyperparameter Tuning Results\n'
-            f'Best {result.metric.upper()} score: {result.results_df[f"{result.metric}_score"].max():.3f}',
+            f'{best_metric_text}',
             fontsize=14
         )
         plt.tight_layout()
@@ -769,9 +779,11 @@ class ModelTuningVisualizer:
             )
         )
         
+        best_metric_text = f'Best {result.metric.upper()} score: {result.best_score:.3f}'
+        
         plt.suptitle(
             f'{result.model_name} Performance Analysis\n'
-            f'Best {result.metric.upper()} score: {result.best_score:.3f}',
+            f'{best_metric_text}',
             fontsize=14,
             y=1.02
         )
@@ -803,9 +815,9 @@ if __name__ == '__main__':
     # Step 4: Initialize visualizer and tuners
     visualizer = ModelTuningVisualizer()
     tuners = [
-        # OrdinalLogisticTuner(target_col=target_col, metric='weighted_mae'),
-        # RandomForestTuner(target_col=target_col, metric='weighted_mae'),
-        # CatBoostOrdinalTuner(target_col=target_col, metric='weighted_mae'),
+        OrdinalLogisticTuner(target_col=target_col, metric='weighted_mae'),
+        RandomForestTuner(target_col=target_col, metric='weighted_mae'),
+        CatBoostOrdinalTuner(target_col=target_col, metric='weighted_mae'),
         OrdinalNeuralNetTuner(target_col=target_col, metric='weighted_mae'),
     ]
     

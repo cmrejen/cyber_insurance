@@ -21,22 +21,18 @@ from coral_pytorch.dataset import levels_from_labelbatch
 from coral_pytorch.losses import CornLoss, coral_loss
 from coral_pytorch.layers import CoralLayer
 from coral_pytorch.dataset import corn_label_from_logits
+from cyber_insurance.models.model_evaluator import ModelResults
 
 from cyber_insurance.utils.logger import setup_logger
+from cyber_insurance.data.preprocessing import OrdinalSMOTEResampler
+from cyber_insurance.models.model_evaluator import weighted_mae_score, cem_score, compute_class_weights
+from cyber_insurance.models.model_evaluator import FoldData
 
 # Configure logger
 logger = setup_logger(__name__)
 
 # Set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-@dataclass
-class ModelResults:
-    """Container for model evaluation results."""
-    model_name: str
-    predictions: np.ndarray
-    cv_scores: Dict[str, np.ndarray]
-    feature_importance: Optional[Dict[str, float]] = None
 
 
 class OrdinalModel(ABC):
@@ -442,7 +438,7 @@ class OrdinalNeuralNet(OrdinalModel):
                 pred = corn_label_from_logits(logits)
                 predictions.append(pred.cpu())
         
-        return torch.cat(predictions).numpy()
+        return torch.cat(predictions).numpy() + 1
     
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         """Generate class probabilities using CORN model.
@@ -582,23 +578,46 @@ class ModelTrainer:
         
         results = []
         
-        kf = StratifiedKFold(
-            n_splits=self.cv_folds,
-            shuffle=True,
-            random_state=self.random_state
+        # Create cross-validation folds
+        kf = StratifiedKFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
+        
+        # Import model tuners for model creation
+        from cyber_insurance.analysis.hyperparameter_tuning_analysis import (
+            OrdinalNeuralNetTuner
         )
         
+        # For each model
         for model in self.models:
-            logger.info(f"Evaluating {model.__class__.__name__}...")
+            logger.info(f"Evaluating {model.__class__.__name__}")
             
+            # Store model parameters if we need to recreate it per fold
+            model_params = {}
+            is_neural_net = isinstance(model, OrdinalNeuralNet)
+            if is_neural_net:
+                # Extract parameters from neural net model for recreation per fold
+                model_params = {
+                    'hidden_layer_sizes': model.hidden_layer_sizes,
+                    'lr': model.lr,
+                    'batch_size': model.batch_size,
+                    'epochs': model.epochs
+                }
+            
+            # Initialize metrics dictionaries
             cv_scores = {
                 'test_mae': [],
                 'test_accuracy': [],
                 'test_f1_weighted': [],
+                'test_weighted_mae': [],
+                'test_cem': [],
                 'train_mae': [],
                 'train_accuracy': [],
-                'train_f1_weighted': []
+                'train_f1_weighted': [],
+                'train_weighted_mae': [],
+                'train_cem': []
             }
+            
+            # Store fold data for SHAP analysis
+            fold_data_list = []
             
             # Perform cross-validation
             for fold_idx, (train_idx, test_idx) in enumerate(kf.split(X, y)):
@@ -610,26 +629,58 @@ class ModelTrainer:
                 X_test = X.iloc[test_idx].copy()
                 y_test = y.iloc[test_idx].copy()
                 
+                # Apply resampling with custom strategy
+                if model.__class__ in [OrdinalNeuralNet, RandomForestOrdinal, OrdinalLogistic]:
+                    resampler = OrdinalSMOTEResampler(
+                        k_neighbors=5,
+                        random_state=self.random_state
+                    )
+                    X_train_resampled, y_train_resampled = resampler.fit_resample(X_train, y_train)
+                else:
+                    X_train_resampled, y_train_resampled = X_train, y_train
+                
+                # For neural networks, create a new instance per fold with the resampled data
+                current_model = model
+                if is_neural_net:
+                    tuner = OrdinalNeuralNetTuner(target_col=model.target_col)
+                    current_model = tuner.create_model(
+                        X=X_train_resampled,
+                        y=y_train_resampled,
+                        **model_params
+                    )
+                
                 # Fit model
-                model.fit(X_train, y_train)
+                current_model.fit(X_train_resampled, y_train_resampled)
                 
                 # Get predictions
-                y_pred_train = model.predict(X_train)
-                y_pred_test = model.predict(X_test)
+                y_pred_train = current_model.predict(X_train_resampled)
+                y_pred_test = current_model.predict(X_test)
                 
                 # Calculate metrics (in-sample)
                 cv_scores['train_mae'].append(
-                    mean_absolute_error(y_train, y_pred_train)
+                    mean_absolute_error(y_train_resampled, y_pred_train)
                 )
                 cv_scores['train_accuracy'].append(
-                    accuracy_score(y_train, y_pred_train)
+                    accuracy_score(y_train_resampled, y_pred_train)
                 )
                 cv_scores['train_f1_weighted'].append(
                     f1_score(
-                        y_train,
+                        y_train_resampled,
                         y_pred_train,
                         average='weighted'
                     )
+                )
+                
+                # Calculate weighted MAE for training data
+                class_weights = compute_class_weights(y_train)
+                cv_scores['train_weighted_mae'].append(
+                    weighted_mae_score(y_train_resampled, y_pred_train, class_weights)
+                )
+                
+                # Calculate CEM score for training data
+                train_counts = np.bincount(y_train)[1:]
+                cv_scores['train_cem'].append(
+                    cem_score(y_train_resampled, y_pred_train, train_counts)
                 )
                 
                 # Calculate metrics (out-of-sample)
@@ -646,6 +697,30 @@ class ModelTrainer:
                         average='weighted'
                     )
                 )
+                
+                # Calculate weighted MAE (using original training weights)
+                class_weights = compute_class_weights(y_train)
+                cv_scores['test_weighted_mae'].append(
+                    weighted_mae_score(y_test, y_pred_test, class_weights)
+                )
+                
+                # Calculate CEM score (using original training counts)
+                train_counts = np.bincount(y_train)[1:]
+                cv_scores['test_cem'].append(
+                    cem_score(y_test, y_pred_test, train_counts)
+                )
+                
+                fold_data = FoldData(
+                    y_test=y_test.copy(),
+                    y_pred_test=y_pred_test,
+                    fold_model=current_model  # Store the model trained on this specific fold
+                )
+                fold_data_list.append(fold_data)
+                
+                # If not using neural networks, we can reuse the same model instance
+                # For neural networks, we created a new instance per fold
+                if not is_neural_net:
+                    model = current_model
             
             # Get feature importance if available
             try:
@@ -660,7 +735,9 @@ class ModelTrainer:
                     y_pred_test
                 ]),
                 cv_scores=cv_scores,
-                feature_importance=feature_importance
+                feature_importance=feature_importance,
+                model=model,
+                fold_data=fold_data_list
             ))
             
             # Log average (out-of-sample) metrics
@@ -668,6 +745,16 @@ class ModelTrainer:
                 f"Average MAE: "
                 f"{np.mean(cv_scores['test_mae']):.3f} ± "
                 f"{np.std(cv_scores['test_mae']):.3f}"
+            )
+            logger.info(
+                f"Average Weighted MAE: "
+                f"{np.mean(cv_scores['test_weighted_mae']):.3f} ± "
+                f"{np.std(cv_scores['test_weighted_mae']):.3f}"
+            )
+            logger.info(
+                f"Average CEM: "
+                f"{np.mean(cv_scores['test_cem']):.3f} ± "
+                f"{np.std(cv_scores['test_cem']):.3f}"
             )
         
         return results

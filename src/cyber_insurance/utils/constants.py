@@ -194,25 +194,25 @@ class NumericalColumns(str, Enum):
 class ModelParams:
     """Hyperparameters for machine learning models."""
     
+    # Ordinal Logistic parameters
+    OL_ALPHA: List[float] = [0.001, 0.01, 0.1, 1.0, 10.0] # Best: MAE: 1
+    
     # Random Forest tuning ranges with proper type hints
-    RF_N_ESTIMATORS: List[int] = [100, 200, 500]  # Best: MAE: 200 > CEM (SMOTEN-Under.): 500
-    RF_MIN_SAMPLES_LEAF: List[int] = [3, 5, 10]  # Best: MAE: 5 > CEM (SMOTEN-Under.): 3     
+    RF_N_ESTIMATORS: List[int] = [100, 200, 500]  # Best: MAE: 100 > CEM (SMOTEN-Under.): 500
+    RF_MIN_SAMPLES_LEAF: List[int] = [3, 5, 10]  # Best: MAE: 10 > CEM (SMOTEN-Under.): 3     
     RF_MAX_FEATURES: List[int] = [5, 10, 15]  # Best: MAE: 10 > CEM (SMOTEN-Under.): 5
     
-    # Ordinal Logistic parameters
-    OL_ALPHA: List[float] = [0.001, 0.01, 0.1, 1.0, 10.0]  # Regularization
-    
     # CatBoost parameters
-    CB_ITERATIONS: List[int] = [1000, 2000] # Best: 1000
-    CB_LEARNING_RATE: List[float] = [0.01, 0.1] # Best: 0.1
-    CB_DEPTH: List[int] = [4, 6] # Best: 4
-    CB_L2_LEAF_REG: List[int] = [3, 6] # Best: 3
+    CB_ITERATIONS: List[int] = [1000, 2000] # Best: MAE: 2000
+    CB_LEARNING_RATE: List[float] = [0.01, 0.1] # Best: MAE: 0.1
+    CB_DEPTH: List[int] = [4, 6] # Best: MAE: 4
+    CB_L2_LEAF_REG: List[int] = [3, 6] # Best: MAE: 6
     
     # PyTorchOrdinal parameters
-    PTORDINAL_HIDDEN_LAYER_SIZES: List[Tuple[int, ...]] = [(64,), (128, 64)]
-    PTORDINAL_LR: List[float] = [0.001, 0.01]
-    PTORDINAL_BATCH_SIZE: List[int] = [64, 128]
-    PTORDINAL_EPOCHS: List[int] = [50, 100]
+    PTORDINAL_HIDDEN_LAYER_SIZES: List[Tuple[int, ...]] = [(64, 32)]
+    PTORDINAL_LR: List[float] = [0.001]
+    PTORDINAL_BATCH_SIZE: List[int] = [64]
+    PTORDINAL_EPOCHS: List[int] = [100]
 
 
 class InputPaths:
