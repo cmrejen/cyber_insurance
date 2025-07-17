@@ -195,18 +195,18 @@ class ModelParams:
     """Hyperparameters for machine learning models."""
     
     # Ordinal Logistic parameters
-    OL_ALPHA: List[float] = [0.001, 0.01, 0.1, 1.0, 10.0] # Best: MAE: 1
+    OL_ALPHA: List[float] = [0.001, 0.01, 0.1, 1.0, 10.0] # Best: weighted MAE: 1
     
     # Random Forest tuning ranges with proper type hints
-    RF_N_ESTIMATORS: List[int] = [100, 200, 500]  # Best: MAE: 100 > CEM (SMOTEN-Under.): 500
-    RF_MIN_SAMPLES_LEAF: List[int] = [3, 5, 10]  # Best: MAE: 10 > CEM (SMOTEN-Under.): 3     
-    RF_MAX_FEATURES: List[int] = [5, 10, 15]  # Best: MAE: 10 > CEM (SMOTEN-Under.): 5
+    RF_N_ESTIMATORS: List[int] = [100, 200, 500]  # Best: weighted MAE: 100 > CEM (SMOTEN-Under.): 500
+    RF_MIN_SAMPLES_LEAF: List[int] = [3, 5, 10]  # Best: weighted MAE: 10 > CEM (SMOTEN-Under.): 3     
+    RF_MAX_FEATURES: List[int] = [5, 10, 15]  # Best: weighted MAE: 10 > CEM (SMOTEN-Under.): 5
     
     # CatBoost parameters
-    CB_ITERATIONS: List[int] = [1000, 2000] # Best: MAE: 2000
-    CB_LEARNING_RATE: List[float] = [0.01, 0.1] # Best: MAE: 0.1
-    CB_DEPTH: List[int] = [4, 6] # Best: MAE: 4
-    CB_L2_LEAF_REG: List[int] = [3, 6] # Best: MAE: 6
+    CB_ITERATIONS: List[int] = [1000, 2000] # Best: weighted MAE: 2000
+    CB_LEARNING_RATE: List[float] = [0.01, 0.1] # Best: weighted MAE: 0.1
+    CB_DEPTH: List[int] = [4, 6] # Best: weighted MAE: 4
+    CB_L2_LEAF_REG: List[int] = [3, 6] # Best: weighted MAE: 6
     
     # PyTorchOrdinal parameters
     PTORDINAL_HIDDEN_LAYER_SIZES: List[Tuple[int, ...]] = [(64, 32)]
